@@ -26,7 +26,7 @@ internal sealed class PlatformSessionBinding(NativeDesignerBackend backend, Oper
                 return existing;
             }
             var adapter = await backend.CreatePlatformAdapterAsync(target);
-            var router = coordinator.CreatePlatformRouter(adapter, target);
+            var router = coordinator.CreatePlatformRouter(adapter, target, backend.BindDevelopmentPreview(adapter));
             sessions[target.SessionId] = router;
             return router;
         }

@@ -37,7 +37,7 @@ public sealed partial class PlatformProjectRouter : IPlatformApiInvoker
 
     public PlatformProjectRouter(IProjectAdapter adapter, ProjectTarget target, SemaphoreSlim? sharedGate = null,
         Action<string, string>? reserveOperationId = null, Action<PlatformOperationStatus>? publishOperationStatus = null,
-        Func<bool>? isSessionExecutionUncertain = null)
+        Func<bool>? isSessionExecutionUncertain = null, StartNativeDevelopmentPreview? startDevelopmentPreview = null)
     {
         this.adapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
         ValidateTarget(target);
@@ -46,6 +46,7 @@ public sealed partial class PlatformProjectRouter : IPlatformApiInvoker
         reserveId = reserveOperationId;
         publishStatus = publishOperationStatus;
         this.isSessionExecutionUncertain = isSessionExecutionUncertain;
+        this.startDevelopmentPreview = startDevelopmentPreview;
         if (adapter.Identity.DesignerVersion != target.DesignerVersion)
             throw new BridgeException("AdapterVersionMismatch", "Adapter and target must identify the exact same Designer build.");
     }
@@ -80,6 +81,7 @@ public sealed partial class PlatformProjectRouter : IPlatformApiInvoker
         if (request.Namespace == "project" && request.Method == "snapshot")
             return await SerializedAsync(async () =>
                 PlatformJson.Element(await SnapshotAsync(request.Target, cancellationToken)), cancellationToken);
+        if (request.Namespace == "preview" && request.Method == "start") return SubmitDevelopmentPreview(request);
         if (request.Namespace == "plugin") return await InvokePluginAsync(request, cancellationToken);
         if (request.Namespace == "collaboration") return await InvokeCollaborationAsync(request, cancellationToken);
         if (request.Namespace == "module" && request.Method is "create" or "update" or "delete")
@@ -495,7 +497,8 @@ public sealed partial class PlatformProjectRouter : IPlatformApiInvoker
                         ? " Parameters.guard is required. Uses the shared native module validation, mutation and save receipt; query the original operationId and inspect saveResult."
                         : " Parameters.guard is required. Native APIs edit memory; query the original operationId, then explicitly module.save with the latest project revision.") }
             : x);
-        var all = BuiltinCatalog().Concat(extensions).ToArray();
+        var builtins = startDevelopmentPreview is null ? BuiltinCatalog() : BuiltinCatalog().Append(DevelopmentPreviewDescriptor());
+        var all = builtins.Concat(extensions).ToArray();
         if (all.GroupBy(x => (x.Namespace, x.Method)).Any(x => x.Count() != 1))
             throw new BridgeException("ApiNameCollision", "Adapter API catalog shadows another registered API.");
         return Array.AsReadOnly(all);

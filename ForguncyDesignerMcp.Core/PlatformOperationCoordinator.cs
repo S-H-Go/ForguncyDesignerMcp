@@ -18,9 +18,9 @@ public sealed partial class OperationCoordinator
 
     // Construct once per native document, never once per client/request. The very
     // same semaphore serializes legacy reports/collaboration/native and platform.
-    public PlatformProjectRouter CreatePlatformRouter(IProjectAdapter adapter, ProjectTarget target) =>
+    public PlatformProjectRouter CreatePlatformRouter(IProjectAdapter adapter, ProjectTarget target, StartNativeDevelopmentPreview? startDevelopmentPreview = null) =>
         new(adapter, target, gate, ReservePlatformOperation, status => PublishPlatformOperation(status, target.SessionId),
-            () => IsPlatformExecutionUncertain(target.SessionId));
+            () => IsPlatformExecutionUncertain(target.SessionId), startDevelopmentPreview);
 
     private void ReservePlatformOperation(string id, string fingerprint)
     {

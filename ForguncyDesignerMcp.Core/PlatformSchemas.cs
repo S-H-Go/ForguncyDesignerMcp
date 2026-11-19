@@ -51,6 +51,10 @@ internal static class PlatformSchemas
     internal static JsonElement Input(string ns, string method)
     {
         if (ns == "collaboration") return CollaborationSchemas.Input(method);
+        if (ns == "preview" && method == "start") return PlatformJson.Element(Object(new() {
+            ["operationId"] = new { type = "string", format = "uuid" }, ["target"] = Target(),
+            ["expectedProjectRevision"] = Text("Current clean project.snapshot revision")
+        }, "operationId", "target", "expectedProjectRevision"));
         if (ns == "catalog") return CatalogInput(method);
         if (ns == "project" && method == "validate_api") return PlatformJson.Element(Object(new() {
             ["namespace"] = Text(), ["method"] = Text(), ["parameters"] = new { type = "object", description = "Proposed native API parameters, including the real mutation guard." }

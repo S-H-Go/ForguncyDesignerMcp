@@ -26,6 +26,14 @@ dotnet build .\ForguncyDesignerMcp\ForguncyDesignerMcp.csproj -c Release -m:1 -n
 
 先核对当前工程、文档会话和工具能力，再读取目标修订。对异步写入，用返回的原操作 ID 查询最终结果；应用到内存不等于已保存，必要时显式保存并回读源文件。遇到结果不明，不要直接重复提交。
 
+### 开发预览（独立 MCP）
+
+在连接的实时能力目录确认 `preview.start` 已登记，再读取 `project.snapshot`。只对已授权且干净的目标文档发起预览，不会先替调用方保存未保存的修改。
+
+调用 `invoke_api`：`namespace` 为 `preview`、`method` 为 `start`；`parameters` 包含新的 UUID `operationId`、从快照复制的 `target` 与 `expectedProjectRevision`（快照的 `revision`）。用 `project.get_operation` 按原 `operationId` 查询；终态 `succeeded` 时取 `result.url`。仅返回不含用户信息、查询串或片段的本机回环地址；其他地址报告为未确认，不会重试运行。运行中的回执不代表 URL 可访问；用同一台电脑验证 HTTP 和页面行为。
+
+该功能调用设计器本机原生运行入口，不访问厂商 MCP，也不是发布站点。原生运行可能写入本机预览产物，或对已保存文档执行原生收尾。旧插件没有此能力时不要照搬厂商接口或重复启动。
+
 ## 许可证
 
 本项目原创源码按 [Apache License 2.0](LICENSE) 发布。[第三方声明](docs/THIRD-PARTY-NOTICES.md)与上游许可证适用于相应依赖；活字格及相关 SDK 不在本仓库许可范围内。

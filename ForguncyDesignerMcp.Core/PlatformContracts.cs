@@ -13,7 +13,7 @@ public enum ModuleKind
 }
 
 public enum ModuleOperation { List, Read, Create, Update, Delete }
-public enum EffectScope { ProjectDefinition, ExternalDatabaseSchema, RuntimeDeployment, AccountService }
+public enum EffectScope { ProjectDefinition, ExternalDatabaseSchema, RuntimeDeployment, AccountService, DevelopmentPreview }
 
 public sealed record ProjectTarget(string InstanceId, string SessionId, string ProjectPath, string DesignerVersion);
 public sealed record AdapterIdentity(string DesignerVersion, string DesignerSha256, string Profile);
