@@ -1,0 +1,24 @@
+{
+  "assembly": [
+    "ForguncyDesignerMcp.dll",
+    "ForguncyDesignerMcp.Core.dll",
+    "ForguncyDesignerMcp.Adapters.V11.dll",
+    "ForguncyDesignerMcp.Adapters.V12.dll",
+    "ForguncyDesignerMcp.Host.dll",
+    "ForguncyDesignerMcp.PlatformRuntime.dll"
+  ],
+  "css": [],
+  "javascript": [
+    "Resources/ForguncyDesignerMcpCellType.js"
+  ],
+  "serverApiAssembly": [],
+  "image": "Resources/PluginLogo.png",
+  "description": "面向活字格 V11/V12 的独立设计器 MCP 服务，提供模块读写、原生保存与回读",
+  "name": "设计器 MCP 扩展",
+  "pluginType": "cellType",
+  "guid": "8b34e735-b71d-48cb-b943-c6eb5a0f1432",
+  "version": "0.5.23.0",
+  "dependenceVersion": "11.0.3.0",
+  "bundleJavaScript": true,
+  "bundleCSS": true
+}

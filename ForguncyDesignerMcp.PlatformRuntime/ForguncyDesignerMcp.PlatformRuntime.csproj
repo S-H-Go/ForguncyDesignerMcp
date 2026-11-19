@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Version>0.5.23</Version>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ForguncyDesignerMcp.Core\ForguncyDesignerMcp.Core.csproj" />
+    <PackageReference Include="Jint" Version="[4.17.0]" />
+    <PackageReference Include="JsonPath.Net" Version="[2.1.1]" />
+  </ItemGroup>
+</Project>

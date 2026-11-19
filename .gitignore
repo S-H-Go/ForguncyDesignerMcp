@@ -1,0 +1,15 @@
+[Bb]in/
+[Oo]bj/
+.vs/
+.local/
+.results/
+TestResults/
+dist/
+*.user
+*.suo
+*.log
+*.dll
+*.zip
+*.fgcc
+*.sqlite
+.env*
