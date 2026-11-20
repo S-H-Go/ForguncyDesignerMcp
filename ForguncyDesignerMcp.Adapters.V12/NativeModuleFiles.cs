@@ -133,8 +133,25 @@ public sealed partial class NativeModuleFiles
         var data = SaveData();
         var json = Serialize(data, loader);
         var hasClonedPairs = IsPage(address.Kind) && json.Contains("\"ConditionAndCommandPairList\"", StringComparison.Ordinal);
-        string LiveJson(object dto) => hasClonedPairs ? LivePageComparison(dto, loader, address.Name) : Serialize(dto, loader);
-        var liveBaseline = hasClonedPairs ? LiveJson(SaveData()) : json;
+        var hasCommandClones = address.Kind == ModuleKind.ServerCommand &&
+            model.GetType().FullName == "Forguncy.ServerCommands.Models.ServerCommands" &&
+            json.Contains("\"ConditionAndCommandPairList\"", StringComparison.Ordinal);
+        string LiveJson(object dto)
+        {
+            if (hasClonedPairs) return LivePageComparison(dto, loader, address.Name);
+            if (hasCommandClones)
+            {
+                // ConvertToSaveData clones Commands and assigns new IDs to cloned
+                // condition pairs. Compare the real live tree, including all IDs
+                // and references, using a disposable DTO, never the save cache.
+                if (dto.GetType().FullName != "Forguncy.SaveLoad.ServerCommandSaveData" ||
+                    ReferenceEquals(dto, model) || R.Get(model, "Commands") is not IList liveCommands)
+                    throw new BridgeException("NativeCommandComparisonUnavailable", "The exact native server command comparison model is unavailable.");
+                R.Set(dto, "Commands", liveCommands);
+            }
+            return Serialize(dto, loader);
+        }
+        var liveBaseline = hasClonedPairs || hasCommandClones ? LiveJson(SaveData()) : json;
         var suffix = IsPage(address.Kind) ? ".rd" : address.Kind == ModuleKind.Report ? ".rdlx" : address.Kind == ModuleKind.BusinessProcess ? ".bpmn" : null;
         var owned = suffix is null ? new[] { key } : new[] { key, Path.ChangeExtension(key, suffix).Replace('\\', '/') };
         var expected = new Dictionary<string, string> { [key] = json };

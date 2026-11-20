@@ -53,6 +53,66 @@ internal static class Program
         ((IList)Get(tree, "Items")!).Add(command);
 
         var files = new NativeModuleFiles(native, colleagues, settings, save);
+        var address = new ModuleAddress(ModuleKind.ServerCommand, "Demo");
+        var noCondition = files.Resolve(address)!;
+        Check(noCondition.Current(), "plain command control is stable");
+        var modelAssembly = Assembly.Load("ServerDesignerCommon");
+        var condition = Activator.CreateInstance(modelAssembly.GetType("Forguncy.Model.ConditionCommand", true)!)!;
+        var pairs = (IList)Get(condition, "ConditionAndCommandPairList")!;
+        var pair = Activator.CreateInstance(pairs.GetType().GetGenericArguments().Single())!;
+        pairs.Add(pair);
+        var liveCommands = (IList)Get(command, "Commands")!;
+        liveCommands.Add(condition);
+        var liveId = (string)Get(pair, "ID")!;
+        var one = files.Resolve(address)!;
+        var two = files.Resolve(address)!;
+        var oneJson = one.ExpectedJson.Single().Value;
+        var twoJson = two.ExpectedJson.Single().Value;
+        var firstProjection = System.Text.Json.Nodes.JsonNode.Parse(oneJson)!;
+        var secondProjection = System.Text.Json.Nodes.JsonNode.Parse(twoJson)!;
+        var firstPair = firstProjection["Commands"]!["$values"]![0]!["ConditionAndCommandPairList"]!["$values"]![0]!;
+        var secondPair = secondProjection["Commands"]!["$values"]![0]!["ConditionAndCommandPairList"]!["$values"]![0]!;
+        Check(!System.Text.Json.Nodes.JsonNode.DeepEquals(firstPair["ID"], secondPair["ID"]),
+            "pinned native ServerCommand conversion generates fresh detached pair IDs");
+        secondPair["ID"] = firstPair["ID"]!.DeepClone();
+        Check(System.Text.Json.Nodes.JsonNode.DeepEquals(firstProjection, secondProjection),
+            "the only difference between these synthetic projections is the cloned pair ID");
+        Check(one.IsPresent() && ReferenceEquals(one.NativeIdentity, command) && (string)Get(pair, "ID")! == liveId,
+            "the exact live model and pair ID remain unchanged by conversion");
+        Check(one.RequiredFiles.SequenceEqual(two.RequiredFiles) && one.ReferencedFiles.SequenceEqual(two.ReferencedFiles),
+            "native key and reference inventory did not change");
+        Check(one.Current() && two.Current(), "unchanged live conditional command is stable");
+        Check(ReferenceEquals(Get(command, "Commands"), liveCommands) &&
+            ReferenceEquals(liveCommands[0], condition) && ReferenceEquals(pairs[0], pair) && (string)Get(pair, "ID")! == liveId,
+            "comparison did not mutate the live command collection or branch ID");
+        var originalDescription = Get(command, "Description");
+        Set(command, "Description", "changed command metadata");
+        Check(!one.Current(), "non-Commands fields stay in the strict server command comparison");
+        commandType.GetProperty("Description", Members)!.SetValue(command, originalDescription);
+        Check(one.Current(), "restored metadata restores comparison");
+        string? Drift() => one.Current() ? null : one.NativeModuleName;
+        var ownerRevision = V12ProjectAdapter.CheckoutExistingOwnersAsync("unchanged-source",
+            () => Task.FromResult(true), () => "unchanged-source", Drift, () => "fresh-revision").GetAwaiter().GetResult();
+        Check(ownerRevision == "fresh-revision", "accepted checkout witness reaches the real native owner-comparison gate");
+        Set(pair, "ID", Guid.NewGuid().ToString("D"));
+        Check(!one.Current(), "an actual live condition pair ID edit invalidates the owner witness");
+        Set(pair, "ID", liveId);
+        Check(one.Current(), "restored actual ID is stable");
+        Set(pair, "Comments", "changed condition branch");
+        Check(!one.Current(), "a real condition branch change invalidates the owner witness");
+        try
+        {
+            V12ProjectAdapter.CheckoutExistingOwnersAsync("unchanged-source", () => Task.FromResult(true),
+                () => "unchanged-source", Drift, () => "fresh-revision").GetAwaiter().GetResult();
+            throw new InvalidOperationException("The stale owner witness was accepted.");
+        }
+        catch (CheckoutBaselineException error) when (error.Code == "CheckoutOwnerChanged") { }
+        Set(pair, "Comments", "");
+        var stable = files.Resolve(address)!;
+        Set(command, "Name", "Renamed");
+        Check(!stable.Current(), "a real native key and command signature change invalidates the owner witness");
+        Set(command, "Name", "Demo");
+
         var arguments = JsonSerializer.SerializeToElement(new { name = "Demo", updates = Array.Empty<object>() });
         var capture = files.CaptureApiBefore("serverCommand", "updateServerCommands", arguments);
         V12ProjectAdapter.ValidateApiCapture("serverCommand", "updateServerCommands", capture);
@@ -69,9 +129,10 @@ internal static class Program
         Set(second, "Name", "Demo");
         ((IList)Get(tree, "Items")!).Add(second);
         Expect("NativeFileTargetAmbiguous", () => files.CaptureApiBefore("serverCommand", "updateServerCommands", arguments));
-        Console.WriteLine("PASS exact V12 node update owner, missing/ambiguous owner, and mandatory effect plan.");
+        Console.WriteLine("PASS exact V12 node update owner, missing/ambiguous owner, mandatory effect plan, and strict live conditional owner witness.");
     }
 
+    private static void Check(bool result, string message) { if (!result) throw new InvalidOperationException(message); }
     private static object? Get(object obj, string name) => obj.GetType().GetProperty(name, Members)!.GetValue(obj);
     private static void Set(object obj, string name, object value) => obj.GetType().GetProperty(name, Members)!.SetValue(obj, value);
     private static void Expect(string code, Action action)
