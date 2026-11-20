@@ -7,7 +7,7 @@ namespace ForguncyDesignerMcp.Core;
 public static class Wire
 {
     public const int Version = 1;
-    public const string PluginVersion = "0.5.29";
+    public const string PluginVersion = "0.5.30";
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     public static string Hash(string text) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
     public static JsonElement Element<T>(T value) => JsonSerializer.SerializeToElement(value, Json);
