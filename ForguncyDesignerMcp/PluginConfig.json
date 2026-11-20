@@ -17,7 +17,7 @@
   "name": "设计器 MCP 扩展",
   "pluginType": "cellType",
   "guid": "8b34e735-b71d-48cb-b943-c6eb5a0f1432",
-  "version": "0.5.27.0",
+  "version": "0.5.28.0",
   "dependenceVersion": "11.0.3.0",
   "bundleJavaScript": true,
   "bundleCSS": true

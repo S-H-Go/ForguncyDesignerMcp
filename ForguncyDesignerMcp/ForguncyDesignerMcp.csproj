@@ -9,7 +9,7 @@
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>0.5.27</Version>
+    <Version>0.5.28</Version>
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="Resources\Icon.png" />
