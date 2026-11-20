@@ -518,8 +518,7 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
                 var registerOwner = await PrepareApiOwnerAsync(fileCapture, writeState, cancellationToken);
                 if(lifecyclePlan)
                 {
-                    startingNativeWrite();
-                    await CheckoutLifecyclePlanAsync(request.OperationId!,request.Target,fileCapture?.Plan,cancellationToken);
+                    await CheckoutLifecyclePlanAsync(request.OperationId!,request.Target,fileCapture?.Plan,cancellationToken,startingNativeWrite);
                 }
                 else if (registerOwner is null)
                     await CheckoutExistingPlanAsync(request.OperationId!,request.Target,fileCapture?.Plan ??

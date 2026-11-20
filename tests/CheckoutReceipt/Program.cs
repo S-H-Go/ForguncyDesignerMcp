@@ -49,12 +49,12 @@ async Task VerifyPagePreflightBoundary()
             await Task.Delay(10, timeout.Token);
         }
     }
-    async Task<PlatformOperationStatus> Update(bool invalid)
+    async Task<PlatformOperationStatus> Update(bool invalid, string? ownerFailure = null)
     {
         _ = await pageRouter.InvokeAsync("project", "snapshot", PlatformJson.Element(new { }));
         var id = Guid.NewGuid().ToString("D");
         var guard = new PlatformApiMutationGuard(id, pageTarget, adapter.ProjectRevision, adapter.User);
-        _ = await pageRouter.InvokeAsync("page", "updateCells", PlatformJson.Element(new { guard, invalid }));
+        _ = await pageRouter.InvokeAsync("page", "updateCells", PlatformJson.Element(new { guard, invalid, ownerFailure }));
         return await Await(id);
     }
     var prior = await Update(false);
@@ -64,11 +64,21 @@ async Task VerifyPagePreflightBoundary()
         adapter.PendingPageEdits == 1 && !pages.IsPlatformExecutionUncertain(pageTarget.SessionId) &&
         pageRouter.GetOperation(prior.OperationId).State == "loaded_pending_save",
         "settled page preflight rejection preserves the previous pending receipt and write eligibility");
+    var ownerRefused = await Update(false, "before");
+    Require(ownerRefused is { State: "failed", Code: "NativeCollaborationModuleUnavailable", ExecutionMayContinue: false } &&
+        adapter.PendingPageEdits == 1 && !pages.IsPlatformExecutionUncertain(pageTarget.SessionId) &&
+        pageRouter.GetOperation(prior.OperationId).State == "loaded_pending_save",
+        "read-only lifecycle owner mapping denial does not quarantine the prior journal");
     var save = new ProjectSaveRequest(Guid.NewGuid().ToString("D"), pageTarget, adapter.ProjectRevision);
     _ = await pageRouter.InvokeAsync("project", "snapshot", PlatformJson.Element(new { }));
     _ = await pageRouter.InvokeAsync("module", "save", PlatformJson.Element(save));
     Require((await Await(save.OperationId)).State == "succeeded" && adapter.SavedPageEdits == 1,
         "an explicit save can still persist the prior edit after the page rejection");
+    var ownerAmbiguous = await Update(false, "after");
+    Require(ownerAmbiguous is { State: "verification_failed", Code: "NativeCollaborationModuleUnavailable", ExecutionMayContinue: true } &&
+        pages.IsPlatformExecutionUncertain(pageTarget.SessionId),
+        "same lifecycle owner error after possible native checkout remains quarantined");
+    Console.WriteLine("PASS lifecycle owner mapping before-dispatch and post-dispatch uncertainty (simulated adapter).");
     Console.WriteLine("PASS settled native page API denial preserves prior pending-save eligibility (simulated adapter).");
 }
 
@@ -193,7 +203,12 @@ sealed class Adapter(ProjectTarget target) : IProjectAdapter, IProjectSaveDispat
 
     public Task<JsonElement> InvokeProjectApiAsync(PlatformApiRequest request, Action startingNativeWrite, CancellationToken token = default)
     {
+        var ownerFailure = request.Parameters.GetProperty("ownerFailure");
+        if (ownerFailure.ValueKind == JsonValueKind.String && ownerFailure.GetString() == "before")
+            throw new BridgeException("NativeCollaborationModuleUnavailable", "Simulated read-only new owner mapping denial.");
         startingNativeWrite();
+        if (ownerFailure.ValueKind == JsonValueKind.String && ownerFailure.GetString() == "after")
+            throw new BridgeException("NativeCollaborationModuleUnavailable", "Simulated subsequent owner error after possible checkout.");
         PendingPageEdits++;
         ProjectRevision = "project-dirty";
         return Task.FromResult(PlatformJson.Element(new { }));

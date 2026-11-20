@@ -55,7 +55,7 @@ public sealed partial class V12ProjectAdapter
             ()=>plan.BeforeGroups.FirstOrDefault(group=>!group.Current())?.NativeModuleName,()=>guard.Value.Capture().Revision);
         ownDirtyRevision=revision;
     }
-    private async Task CheckoutLifecyclePlanAsync(string operationId,ProjectTarget target,NativeModuleFilePlan? plan,CancellationToken token)
+    private async Task CheckoutLifecyclePlanAsync(string operationId,ProjectTarget target,NativeModuleFilePlan? plan,CancellationToken token,Action? startingNativeWrite=null)
     {
         var state=guard.Value.Capture();
         if(!state.InCollaborationMode) return;
@@ -76,8 +76,14 @@ public sealed partial class V12ProjectAdapter
         {
             var groups=plan.BeforeGroups.ToDictionary(group=>group.NativeModuleName,group=>(IReadOnlyList<string>)group.Paths,StringComparer.Ordinal);
             var directories=plan.BeforeGroups.Where(group=>group.Address.Kind==ModuleKind.Folder).ToDictionary(group=>group.NativeModuleName,group=>(IReadOnlyList<string>)group.RequiredDirectories,StringComparer.Ordinal);
-            var receipt=await collaboration.Value.CheckoutAsync(request,changes,token,groups,directories);
-            if(receipt.ExecutionMayContinue||receipt.State=="verification_failed") uncertain=true;
+            var receipt=await collaboration.Value.CheckoutAsync(request,changes,token,groups,directories,startingNativeWrite);
+            if(receipt.ExecutionMayContinue||receipt.State=="verification_failed")
+            {
+                startingNativeWrite?.Invoke();
+                uncertain=true;
+            }
+            if (receipt.State == "rejected" && !receipt.ExecutionMayContinue && receipt.NativeAccepted == false)
+                throw new BridgeException(receipt.Code, receipt.Message);
             return !receipt.ExecutionMayContinue&&receipt.State=="succeeded"&&receipt.NativeAccepted==true&&receipt.LockStateVerified;
         },()=>NativeProjectGuard.SourceRevision(target.ProjectPath,includeCollaboration:false),
             ()=>plan.BeforeGroups.FirstOrDefault(group=>!group.Current())?.NativeModuleName,()=>guard.Value.Capture().Revision);

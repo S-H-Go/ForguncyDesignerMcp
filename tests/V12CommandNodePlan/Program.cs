@@ -32,6 +32,7 @@ internal static class Program
         var settings = New("lt");
         var nativeState = native.GetType("s", true)!.GetProperty("Instance", Members)!.GetValue(null)!;
         Set(nativeState, "et", settings);
+        VerifyLazyPageOwner(native, settings);
         var colleagues = New("hl");
         var mediator = New("dt");
         var save = New("hu", Path.Combine(scratch, "fixture.fgcc"));
@@ -191,6 +192,34 @@ internal static class Program
         internal List<string> Names = [];
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) =>
             targetMethod?.Name == "GetAllColumnNames" ? Names : throw new NotSupportedException(targetMethod?.Name);
+    }
+
+    private static void VerifyLazyPageOwner(Assembly native, object settings)
+    {
+        var actions = native.GetType("Forguncy.AI.Actions.PageSandboxAIActions", true)!;
+        var requestType = actions.GetNestedType("CreatePageRequest", Members)!;
+        var request = JsonSerializer.Deserialize("""{"name":"FixturePageNew","type":"normal"}""", requestType,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+        var resolver = Activator.CreateInstance(native.GetType("abe+ae", true)!)!;
+        var tuples = (IEnumerable)NativeReflection.Call(resolver, "Resolve", request)!;
+        var tuple = tuples.Cast<object>().Single();
+        var token = tuple.GetType().GetField("Item1")!.GetValue(tuple)!;
+        Check(tuple.GetType().GetField("Item2")!.GetValue(tuple)!.ToString() == "New", "Native create page resolver produces its New token.");
+        var root = Get(Get(settings, "Pages")!, "NormalPageRoot")!;
+        var map = new NativeCollaborationModules(native, settings, Array.Empty<object>());
+        Set(root, "Loaded", false);
+        try
+        {
+            _ = map.MapNativeModule(token);
+            throw new InvalidOperationException("The native page mapper accepted a lazy root without proof.");
+        }
+        catch (BridgeException error) when (error.Code == "NativeCollaborationModuleUnavailable" &&
+            error.Message.Contains("complete native owner tree", StringComparison.Ordinal)) { }
+        Check(Get(root, "Loaded") is false, "Read-only mapper must not force native page tree state.");
+        Set(root, "Loaded", true);
+        Check(map.MapNativeModule(token) == new ModuleAddress(ModuleKind.Page, "FixturePageNew"),
+            "A complete empty native owner tree accepts the same resolver-generated New token.");
+        Console.WriteLine("PASS exact V12 createPage native New-owner mapping distinguishes lazy and complete roots.");
     }
 
 }
