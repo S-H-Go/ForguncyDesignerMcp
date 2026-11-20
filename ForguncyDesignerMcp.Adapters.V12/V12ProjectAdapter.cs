@@ -522,12 +522,14 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
                 {
                     if (pending.Count != 0 || apiPending || pendingAccountExport is not null)
                         throw new BridgeException("NativePageCreatePrestateUnverified", "Native single-dispatch page creation cannot share a pending edit journal.");
+                    targetFiles.Value.RequireNewDesktopPageFilesAbsent(fileCapture!.Address.Name);
                     singleCreateProof = await collaboration.Value.PrepareNativePageCreateAsync(request.OperationId!, writeState, fileCapture!, cancellationToken);
                     await RevalidateApiGuard(request, mutation, cancellationToken);
                     var latestCapture = targetFiles.Value.CaptureApiBefore(request.Namespace, request.Method, nativeParameters);
                     if (latestCapture?.Address != fileCapture!.Address ||
                         !NativePageReservationPreflight.Validate(context.DesignerAssembly, context.NativeDocument, writeState, request.Namespace, request.Method, nativeParameters, latestCapture))
                         throw new BridgeException("NativePageCreatePrestateUnverified", "The exact native single-dispatch page plan changed before dispatch.");
+                    targetFiles.Value.RequireNewDesktopPageFilesAbsent(fileCapture.Address.Name);
                     collaboration.Value.ConfirmNativePageCreatePrestate(singleCreateProof);
                 }
                 else if(lifecyclePlan)

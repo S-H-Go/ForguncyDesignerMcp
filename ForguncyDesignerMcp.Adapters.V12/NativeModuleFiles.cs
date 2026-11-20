@@ -679,6 +679,32 @@ public sealed partial class NativeModuleFiles
         return new("scheduledTask", "deleteScheduledTask", parameters.Clone(), address, ModuleOperation.Delete, before, plan);
     }
 
+    internal void RequireNewDesktopPageFilesAbsent(string name)
+    {
+        var source = (string?)R.Call(save, "GetDocumentPath");
+        var working = (string?)R.Get(save, "LocalPath");
+        var staged = (string?)R.Get(save, "LastPath");
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(working) || string.IsNullOrWhiteSpace(staged) ||
+            R.Get(save, "Loaded") is not true)
+            throw new BridgeException("NativePageCreateSourceUnavailable", "The bound native page source and cache roots are not available.");
+        RequireDesktopPageFilesAbsent(name, [source, working, staged]);
+    }
+
+    internal static void RequireDesktopPageFilesAbsent(string name, IReadOnlyList<string> roots)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || name.Trim() != name ||
+            name.EndsWith('.') || name == "." || name == "..")
+            throw new BridgeException("NativePageCreateSourceUnavailable", "The requested page name cannot be mapped to a canonical native file pair.");
+        foreach (var root in roots)
+            foreach (var extension in new[] { ".json", ".rd" })
+            {
+                var path = NativeSaveVerification.Under(root, "Pages/" + name + extension);
+                var folder = Path.GetDirectoryName(path)!;
+                if (Directory.Exists(folder) && Directory.EnumerateFileSystemEntries(folder).Any(file =>
+                    Path.GetFileName(file).Equals(Path.GetFileName(path), StringComparison.OrdinalIgnoreCase)))
+                    throw new BridgeException("NativePageCreateSourceCollision", "An existing page file or cache entry uses the requested name.");
+            }
+    }
     private NativeApiFileCapture? CapturePageCreate(JsonElement parameters)
     {
         NativeApiCatalog.ValidateParameters("page","createPage",parameters);

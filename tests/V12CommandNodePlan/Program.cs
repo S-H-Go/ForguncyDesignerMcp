@@ -253,6 +253,21 @@ internal static class Program
         MustRefuse("NativePageNameAlreadyExists", () =>
             NativePageReservationPreflight.RequireCompleteNameInventory((new List<string> { name.ToUpperInvariant() }, true), name));
 
+        var scratch = Path.Combine(Path.GetTempPath(), "mcp-page-collision-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(scratch, "Pages"));
+        var alias = Path.Combine(scratch, "Pages", name.ToUpperInvariant() + ".RD");
+        try
+        {
+            NativeModuleFiles.RequireDesktopPageFilesAbsent(name, [scratch]);
+            File.WriteAllText(alias, "synthetic companion");
+            MustRefuse("NativePageCreateSourceCollision", () => NativeModuleFiles.RequireDesktopPageFilesAbsent(name, [scratch]));
+        }
+        finally
+        {
+            File.Delete(alias);
+            Directory.Delete(Path.Combine(scratch, "Pages"));
+            Directory.Delete(scratch);
+        }
         var target = new ProjectTarget("fixture", "document", Path.GetFullPath("fixture"), "12.0.102.0");
         var user = new UserIdentity("fixture", "fixture@example.invalid");
         var snapshot = new ProjectSnapshot(target, false, false, true, user, "before");
