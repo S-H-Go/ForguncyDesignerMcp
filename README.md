@@ -51,3 +51,7 @@ pwsh -File .\scripts\Build-Universal.ps1 `
 只验证源码与三版本兼容性、不生成发行包时，可加上 `-VerifyOnly`。验证包含公开的 V12 服务端命令、签出回执及语言资源专项测试。
 
 构建使用 11.0.3.0 SDK，并核对三个安装版本的二进制指纹。工具运行公开预览回归、以同一组实际生成的 DLL 隔离验证三个原生宿主版本，并将安装包、离线包及 SHA-256 写入本仓库的 `dist/`，更新 `dist/latest-release.json`。结果不会安装插件、启动 Designer、打开业务工程或提交到 GitHub。原生宿主探针会启动并关闭仅限回环地址的测试 HTTP 端口。日志和源提交绑定证据保存在本地 `.local/`。这不是私有业务项目回归或实机验收。
+
+### V12 保存结果未确认
+
+用原操作 ID 查询 `project.get_operation`。先区分派发前拒绝和 `SaveUnconfirmed`；后者查看 `saveResult` 中的原生接受、脏标记、源验证及可选 `verificationFailure`（阶段、文件角色、原因）。`executionMayContinue=false` 不代表保存已验证，不应自动重发。会话已隔离时先按同一工程独立只读核对预期结果和完整属主文件组；仍无法确认时保留原回执并停止写入。没有自动解除隔离接口。

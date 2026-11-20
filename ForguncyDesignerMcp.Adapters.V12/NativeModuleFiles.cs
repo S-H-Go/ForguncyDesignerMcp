@@ -471,11 +471,19 @@ public sealed partial class NativeModuleFiles
         return File.Exists(NativeSaveVerification.Under(local,relative)) || File.Exists(NativeSaveVerification.Under(staged,relative)) || NativeSaveVerification.ReadSource(source,relative) is not null;
     }
 
-    public bool Verify(NativeModuleFileGroup group)
+    public bool Verify(NativeModuleFileGroup group) => Verify(group, null);
+
+    internal bool Verify(NativeModuleFileGroup group, Action<ProjectSaveDiagnostic>? onFailure, string stage = "afterNativeSave")
     {
+        bool Reject(string code, string? file = null)
+        {
+            if (group.NativeModuleName == "ApplicationSetting")
+                onFailure?.Invoke(new(stage, NativeSaveVerification.ApplicationFileRole(file), code));
+            return false;
+        }
         if (group.Address == NativePluginCheckinFiles.Address) return group.Current();
         if(group.Address==MapResourceOwner)return VerifyMapResources(group);
-        if (!group.Current()) return false;
+        if (!group.Current()) return Reject("OwnerModelMismatch");
         // A final-path reduction can leave a deleted old identity with no
         // physical tombstones when a new identity legitimately owns those
         // paths. Its native absence remains independently required.
@@ -492,11 +500,12 @@ public sealed partial class NativeModuleFiles
         foreach (var file in group.RequiredFiles.Concat(group.ReferencedFiles).Distinct(StringComparer.Ordinal))
         {
             var staged = NativeSaveVerification.Under(staging, file);
-            if (!File.Exists(staged)) return false;
-            if (new FileInfo(staged).Length > 64 * 1024 * 1024) return false;
+            if (!File.Exists(staged)) return Reject("StagedFileMissing", file);
+            if (new FileInfo(staged).Length > 64 * 1024 * 1024) return Reject("StagedFileTooLarge", file);
             var bytes = NativeSaveVerification.ReadSource(source, file);
-            if (bytes is null || FileHash(staged) != Hash(bytes)) return false;
-            if (!group.MatchesContent(file, bytes)) return false;
+            if (bytes is null) return Reject("SourceFileMissing", file);
+            if (FileHash(staged) != Hash(bytes)) return Reject("StagingSourceMismatch", file);
+            if (!group.MatchesContent(file, bytes)) return Reject("SavedProjectionMismatch", file);
         }
         foreach (var file in group.AbsentFiles)
             if (File.Exists(NativeSaveVerification.Under((string)R.Get(save, "LocalPath")!, file)) ||

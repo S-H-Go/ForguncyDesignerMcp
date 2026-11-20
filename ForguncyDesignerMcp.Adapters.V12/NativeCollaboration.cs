@@ -378,7 +378,7 @@ public sealed class NativeCollaboration
         return true;
     }
 
-    internal async Task<EditRegistration> PrepareRegisteredEditFilesAsync(NativeModuleFileGroup group, CancellationToken token)
+    internal async Task<EditRegistration> PrepareRegisteredEditFilesAsync(NativeModuleFileGroup group, CancellationToken token, bool beforeSave = false)
     {
         var status = await CaptureStatusAsync(token);
         var owner = status.Modules.SingleOrDefault(item => item.NativeModuleName == group.NativeModuleName);
@@ -401,15 +401,28 @@ public sealed class NativeCollaboration
         string[] Inventory(string method) => ((IEnumerable<string>)NativeReflection.Static(helper, method, module)!).ToArray();
         var nativePaths = Inventory("GetReferFilesFromWorkingDirectory");
         var files = nativePaths.Select(Relative).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var staged = Inventory("GetReferFilesFromLastSavedFilesFolder").Select(Relative);
+        var staged = Inventory("GetReferFilesFromLastSavedFilesFolder").Select(Relative).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var application = group.Address == NativeModuleFiles.ApplicationRoot;
+        var stage = beforeSave ? "beforeNativeSave" : "beforeMutation";
         if (!files.SetEquals(staged) || !group.RequiredFiles.All(files.Contains))
+        {
+            var hint = "";
+            if (application)
+            {
+                var missing = group.RequiredFiles.FirstOrDefault(path => !files.Contains(path) || !staged.Contains(path));
+                var mismatch = missing ?? files.Concat(staged).FirstOrDefault(path => files.Contains(path) != staged.Contains(path));
+                hint = $" Stage={stage}; fileRole={NativeSaveVerification.ApplicationFileRole(mismatch)}; reason={(missing is null ? "InventoryMismatch" : "RequiredFileMissing")}.";
+            }
             throw Error("Native" + ownerKind + "TrackingUnavailable",
-                "The working and staged native inventories must agree and cover the requested root file group.");
-        if (group.Address == NativeModuleFiles.ApplicationRoot)
+                "The working and staged native inventories must agree and cover the requested root file group." + hint);
+        }
+        if (application)
         {
             var companions = files.Except(group.RequiredFiles, StringComparer.OrdinalIgnoreCase).ToArray();
-            if (companions.Length != 0 && !new NativeSaveVerification(context).VerifyFiles(companions))
-                throw Error("ApplicationOwnerFileChanged", "A companion of the native ApplicationSetting owner differs between staging and source.");
+            if (companions.Length != 0 &&
+                new NativeSaveVerification(context).FirstStagedSourceMismatch(companions) is { } mismatch)
+                throw Error("ApplicationOwnerFileChanged",
+                    $"Stage={stage}; fileRole={NativeSaveVerification.ApplicationFileRole(mismatch.RelativeFile)}; reason={mismatch.Code}.");
         }
         var tracking = (IDictionary)NativeReflection.Get(manager, "SaveLoadTrackedFiles")!;
         if (tracking.Contains(group.NativeModuleName))

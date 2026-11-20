@@ -49,6 +49,13 @@ public sealed record ModuleMutationRequest(string OperationId, ProjectTarget Tar
     AccountServiceBinding? ExpectedServiceBinding = null);
 public sealed record ProjectSaveRequest(string OperationId, ProjectTarget Target, string ExpectedProjectRevision,
     AccountServiceBinding? ExpectedServiceBinding = null);
+/// <summary>Adapter-defined save boundary; signal before any save-side registration or native dispatch.</summary>
+public interface IProjectSaveDispatchAdapter
+{
+    Task<ProjectSaveResult> SaveWithDispatchAsync(ProjectSaveRequest request, Action startingNativeWrite,
+        CancellationToken cancellationToken = default);
+}
+public sealed record ProjectSaveDiagnostic(string Stage, string FileRole, string Code);
 public sealed record ProjectSaveResult(bool NativeSaveAccepted, bool ContainsUnsavedChanges,
     bool SourceVerified, string? EvidenceDirectory = null)
 {
@@ -56,6 +63,7 @@ public sealed record ProjectSaveResult(bool NativeSaveAccepted, bool ContainsUns
     // source/model verification. Null means no historical archive hash proof.
     // Keep the positional constructor unchanged for existing adapter binaries.
     public string? SavedSourceSha256 { get; init; }
+    public ProjectSaveDiagnostic? VerificationFailure { get; init; }
 }
 public sealed record ModuleMutationReceipt(string OperationId, string State, string Code, string Message,
     ModuleDocument? Document = null, ProjectSaveResult? SaveResult = null,

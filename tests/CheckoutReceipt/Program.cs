@@ -29,6 +29,58 @@ try
 catch (BridgeException ex) when (ex.Code == "NativeExecutionUncertain") { }
 Console.WriteLine("V12 module.update settled and uncertain checkout receipt routing passed (simulated adapter).");
 
+await VerifySaveBoundary(2);
+await VerifySaveBoundary(3);
+
+async Task VerifySaveBoundary(int uncertainMode)
+{
+    var saveTarget = target with { SessionId = "save-fixture" };
+    var saveFixture = new Adapter(saveTarget);
+    var saveCoordinator = new OperationCoordinator(null!);
+    var saveRouter = saveCoordinator.CreatePlatformRouter(saveFixture, saveTarget);
+    ProjectSaveRequest NewSave() => new(Guid.NewGuid().ToString("D"), saveTarget, saveFixture.ProjectRevision);
+    async Task<PlatformOperationStatus> SubmitSave(ProjectSaveRequest request)
+    {
+        _ = await saveRouter.InvokeAsync("project", "snapshot", PlatformJson.Element(new { }));
+        _ = await saveRouter.InvokeAsync("module", "save", PlatformJson.Element(request));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (true)
+        {
+            var receipt = saveRouter.GetOperation(request.OperationId);
+            if (receipt.State is not ("queued" or "running") &&
+                (saveFixture.SaveMode < 2 || saveCoordinator.IsPlatformExecutionUncertain(saveTarget.SessionId))) return receipt;
+            await Task.Delay(10, timeout.Token);
+        }
+    }
+
+    var original = NewSave();
+    var refused = await SubmitSave(original);
+    Require(refused.State == "failed" && !refused.ExecutionMayContinue &&
+        saveFixture.NativeSaves == 0 && !saveCoordinator.IsPlatformExecutionUncertain(saveTarget.SessionId),
+        "pre-save read-only refusal does not quarantine");
+    saveFixture.SaveMode = 1;
+    var successful = await SubmitSave(NewSave());
+    Require(successful.State == "succeeded" && saveFixture.NativeSaves == 1 &&
+        saveRouter.GetOperation(original.OperationId).Code == "ApplicationOwnerFileChanged",
+        "fresh explicit save remains eligible without replaying the original ID");
+    saveFixture.SaveMode = uncertainMode;
+    var unconfirmed = await SubmitSave(NewSave());
+    if (uncertainMode == 2) Require(unconfirmed is { State: "verification_failed", Code: "SaveUnconfirmed", ExecutionMayContinue: false } &&
+            unconfirmed.Result?.GetProperty("saveResult").GetProperty("verificationFailure").GetProperty("fileRole").GetString() == "ApplicationSettings.json" &&
+            saveCoordinator.IsPlatformExecutionUncertain(saveTarget.SessionId),
+        "native call can terminate with unconfirmed persistence, retaining evidence and isolating later writes");
+    else Require(unconfirmed is { State: "verification_failed", Code: "ApplicationOwnerFileChanged", ExecutionMayContinue: true } &&
+                saveCoordinator.IsPlatformExecutionUncertain(saveTarget.SessionId),
+        "the same code after registration/dispatch is not classified as a safe refusal");
+    try
+    {
+        _ = await SubmitSave(NewSave());
+        throw new InvalidOperationException("Unconfirmed save admitted a fresh write.");
+    }
+    catch (BridgeException ex) when (ex.Code == "NativeExecutionUncertain") { }
+    Console.WriteLine("PASS explicit save boundary and terminal unverified persistence receipts (simulated adapter).");
+}
+
 ModuleMutationRequest Request() => new(Guid.NewGuid().ToString("D"), target, ModuleOperation.Update,
     fixture.Document.Address, fixture.ProjectRevision, fixture.Document.Revision, fixture.Document, Save: false, ExpectedUser: fixture.User);
 async Task<PlatformOperationStatus> Run(ModuleMutationRequest request)
@@ -45,12 +97,23 @@ async Task<PlatformOperationStatus> Run(ModuleMutationRequest request)
 }
 static void Require(bool value, string label) { if (!value) throw new Exception(label); }
 
-sealed class Adapter(ProjectTarget target) : IProjectAdapter
+sealed class Adapter(ProjectTarget target) : IProjectAdapter, IProjectSaveDispatchAdapter
 {
     public UserIdentity User { get; } = new("test-user", "test-user@example.invalid");
     public ModuleDocument Document { get; } = new(new(ModuleKind.ServerCommand, "DemoCommand"),
         PlatformJson.Element(new { commands = new[] { new { type = "Condition", branch = "Then" } } }), [], "module-1");
     public int CommandWrites { get; private set; }
+    public int SaveMode { get; set; }
+    public int NativeSaves { get; private set; }
+    public Task<ProjectSaveResult> SaveWithDispatchAsync(ProjectSaveRequest request, Action startingNativeWrite, CancellationToken token = default)
+    {
+        if (SaveMode == 0) throw new BridgeException("ApplicationOwnerFileChanged", "Stage=beforeNativeSave; fileRole=favicon.ico.");
+        startingNativeWrite();
+        NativeSaves++;
+        if (SaveMode == 3) throw new BridgeException("ApplicationOwnerFileChanged", "Simulated exception after first possible native effect.");
+        return Task.FromResult(SaveMode == 1 ? new ProjectSaveResult(true, false, true) :
+            new ProjectSaveResult(true, false, false) { VerificationFailure = new("afterNativeSave", "ApplicationSettings.json", "SavedProjectionMismatch") });
+    }
     public bool ThrowUnclassified { get; set; }
     public string ProjectRevision { get; set; } = "project-original";
     private bool refused;

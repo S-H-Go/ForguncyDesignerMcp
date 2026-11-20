@@ -52,27 +52,45 @@ internal sealed class NativeSaveVerification(AdapterHostContext context)
         return files.Order(StringComparer.Ordinal).ToArray();
     }
 
-    internal bool VerifyFiles(IReadOnlyList<string> nativeFiles)
+    internal bool VerifyFiles(IReadOnlyList<string> nativeFiles) =>
+        nativeFiles.Count != 0 && FirstStagedSourceMismatch(nativeFiles) is null;
+
+    internal (string RelativeFile, string Code)? FirstStagedSourceMismatch(IReadOnlyList<string> nativeFiles)
     {
-        if (nativeFiles.Count == 0) return false;
         var source = context.CaptureSnapshot().Target.ProjectPath;
         var staging = (string)NativeReflection.Get(SaveFile, "LastPath")!;
+        return FirstStagedSourceMismatch(staging, source, nativeFiles);
+    }
+
+    internal static (string RelativeFile, string Code)? FirstStagedSourceMismatch(
+        string staging, string source, IEnumerable<string> nativeFiles)
+    {
         foreach (var file in nativeFiles)
         {
             var stagedFile = Under(staging, file);
             var sourceBytes = ReadSource(source, file);
             if (!File.Exists(stagedFile))
             {
-                if (sourceBytes is not null) return false;
+                if (sourceBytes is not null) return (file, "StagedFileMissing");
             }
             else
             {
                 using var input = File.OpenRead(stagedFile);
-                if (sourceBytes is null || !SHA256.HashData(input).AsSpan().SequenceEqual(SHA256.HashData(sourceBytes))) return false;
+                if (sourceBytes is null) return (file, "SourceFileMissing");
+                if (!SHA256.HashData(input).AsSpan().SequenceEqual(SHA256.HashData(sourceBytes)))
+                    return (file, "StagingSourceMismatch");
             }
         }
-        return true;
+        return null;
     }
+
+    internal static string ApplicationFileRole(string? relativeFile) => relativeFile switch
+    {
+        "ApplicationSettings.json" => "ApplicationSettings.json",
+        "favicon.ico" => "favicon.ico",
+        null => "applicationOwner",
+        _ => "applicationCompanion"
+    };
 
     internal static string Relative(string project, string nativePath)
     {

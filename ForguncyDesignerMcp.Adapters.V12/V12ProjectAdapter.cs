@@ -424,7 +424,11 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
         finally { writer.Release(); }
     }
 
-    public async Task<ProjectSaveResult> SaveAsync(ProjectSaveRequest request, CancellationToken cancellationToken = default)
+    public Task<ProjectSaveResult> SaveAsync(ProjectSaveRequest request, CancellationToken cancellationToken = default) =>
+        SaveWithDispatchAsync(request, static () => { }, cancellationToken);
+
+    public async Task<ProjectSaveResult> SaveWithDispatchAsync(ProjectSaveRequest request, Action startingNativeWrite,
+        CancellationToken cancellationToken = default)
     {
         await writer.WaitAsync(cancellationToken);
         try
@@ -437,7 +441,7 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
                 var state = guard.Value.Capture();
                 guard.Value.RequireWrite(request.Target, request.ExpectedProjectRevision, null,
                     allowDirty: (pending.Count != 0 || apiPending||pendingAccountExport is not null) && state.Revision == ownDirtyRevision);
-                return await SaveCore(request.ExpectedServiceBinding);
+                return await SaveCore(request.ExpectedServiceBinding, startingNativeWrite);
             }, cancellationToken);
         }
         finally { writer.Release(); }
@@ -656,7 +660,7 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
         return (Task<bool>)method.Invoke(context.NativeDocument, [false])!;
     }
 
-    private async Task<ProjectSaveResult> SaveCore(AccountServiceBinding? reviewedService=null)
+    private async Task<ProjectSaveResult> SaveCore(AccountServiceBinding? reviewedService=null, Action? startingNativeWrite=null)
     {
         if(pendingAccountExport is not null&&reviewedService!=pendingAccountExport)
             throw new BridgeException("AccountServiceRevisionChanged","The requested account export does not match the approved post-operation service binding.");
@@ -671,28 +675,36 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
             if(reviewedService is not null) accounts.Value.RequireCurrentBinding(reviewedService);
             return Task.CompletedTask;
         });
+        var registrations = new List<NativeCollaboration.EditRegistration>();
         foreach (var rootIdentity in pendingRegisteredOwners)
         {
             var group = apiTargetGroups[rootIdentity];
             guard.Value.RequireOwnedModule(beforeWait, group.NativeModuleName);
-            var register = await collaboration.Value.PrepareRegisteredEditFilesAsync(group, CancellationToken.None);
+            var register = await collaboration.Value.PrepareRegisteredEditFilesAsync(group, CancellationToken.None, beforeSave: true);
             if (!group.Current() || guard.Value.Capture().Revision != beforeWait.Revision)
                 throw new BridgeException("BaselineChanged", "The reviewed owner group changed before native save.");
-            register.Register();
+            registrations.Add(register);
         }
+        // The earlier checks only collect evidence. Registration can modify
+        // transient tracking, so everything from here is conservatively dispatched.
+        startingNativeWrite?.Invoke();
+        foreach (var register in registrations) register.Register();
         var accepted = await saveDocument();
         guard.Value.CheckTarget(context.CaptureSnapshot().Target);
         var afterSave=guard.Value.Capture();
         var dirty=afterSave.HasUnsavedChanges || NativeReflection.Get(context.NativeDocument,"ContainsUnsavedChanges") is true;
+        ProjectSaveDiagnostic? verificationFailure = null;
+        bool VerifyGroup(NativeModuleFileGroup group) =>
+            targetFiles.Value.Verify(group, failure => verificationFailure ??= failure);
         bool VerifyPending()
         {
-            var valid=(pending.Count > 0 || apiPending||reviewedService is not null) && pending.All(x => IsFileDefinition(x.Request.Address.Kind) ? VerifyTypedTarget(x.Request) :
+            var valid=(pending.Count > 0 || apiPending||reviewedService is not null) && pending.All(x => IsFileDefinition(x.Request.Address.Kind) ? VerifyTypedTarget(x.Request, VerifyGroup) :
                 x.Request.Address.Kind == ModuleKind.DataConnection ? connections.Value.VerifySource(x.Request) :
                 x.Request.Address.Kind == ModuleKind.ResourceFile ? resources.Value.VerifySource(x.Request) :
                 NativeRegisteredFolders.Supports(x.Request.Address) ? RegisteredFolders(x.Request.Address.FolderPath).VerifySource(x.Request) :
                 NativeDefinitionFolders.Supports(x.Request.Address) ? folders.Value.VerifySource(x.Request) :
-                UsesNativeModules(x.Request.Address.Kind) ? NativeModuleFiles.Supports(x.Request.Address.Kind) ? VerifyTypedTarget(x.Request) : modules.Value.VerifySource(x.Request) : VerifyRegistryTarget(x.Request));
-            if(apiTargetGroups.Count>0) valid &= ReduceFileGroups(apiTargetGroups.Values).All(targetFiles.Value.Verify);
+                UsesNativeModules(x.Request.Address.Kind) ? NativeModuleFiles.Supports(x.Request.Address.Kind) ? VerifyTypedTarget(x.Request, VerifyGroup) : modules.Value.VerifySource(x.Request) : VerifyRegistryTarget(x.Request));
+            if(apiTargetGroups.Count>0) valid &= ReduceFileGroups(apiTargetGroups.Values).All(VerifyGroup);
             if(apiPending) valid &= apiFileGroupsKnown&&apiTargetGroups.Count>0;
             if(reviewedService is not null) valid &= accounts.Value.VerifyProjectExport(reviewedService,beforeWait.Target.ProjectPath);
             return valid;
@@ -718,7 +730,7 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
         if (accepted && !dirty && verified) { pendingRegisteredOwners.Clear(); pending.Clear(); pendingAddresses.Clear(); typedTargets.Clear(); apiPending = false; apiFileGroupsKnown=true; apiTargetGroups.Clear(); apiPendingFiles.Clear(); pendingResourceOwnerNames.Clear(); pendingAccountExport=null; originalSourceRevision = null; ownDirtyRevision = null; }
         else if (originalSourceRevision is not null && originalSourceRevision != NativeProjectGuard.SourceRevision(context.CaptureSnapshot().Target.ProjectPath, includeCollaboration: false)) uncertain = true;
         else ownDirtyRevision = guard.Value.Capture().Revision;
-        return new ProjectSaveResult(accepted, dirty, verified) { SavedSourceSha256=savedHash };
+        return new ProjectSaveResult(accepted, dirty, verified) { SavedSourceSha256=savedHash, VerificationFailure=verified ? null : verificationFailure };
     }
 
     private async Task RevalidateApiGuard(PlatformApiRequest request,PlatformApiMutationGuard mutation,CancellationToken cancellationToken)
@@ -828,8 +840,8 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
         var captured=registryModules.Value.GetTargetGroups(request);
         return captured.Count>0&&captured.All(group=>targetFiles.Value.Verify(FindFinalTargetGroup(group,apiTargetGroups.Values)));
     }
-    private bool VerifyTypedTarget(ModuleMutationRequest request) => typedTargets.TryGetValue(request.OperationId,out var group)&&
-        targetFiles.Value.Verify(FindFinalTargetGroup(group,apiTargetGroups.Values));
+    private bool VerifyTypedTarget(ModuleMutationRequest request, Func<NativeModuleFileGroup, bool> verify) => typedTargets.TryGetValue(request.OperationId,out var group)&&
+        verify(FindFinalTargetGroup(group,apiTargetGroups.Values));
     private void RequirePreownedCapture(NativeApiFileCapture? capture)
     {
         if(capture?.RequiredOwnedModules is not { Count:>0 } names) return;

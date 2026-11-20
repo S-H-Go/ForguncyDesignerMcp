@@ -5,7 +5,7 @@ using R = ForguncyDesignerMcp.Adapters.V12.NativeReflection;
 
 namespace ForguncyDesignerMcp.Adapters.V12;
 
-public sealed partial class V12ProjectAdapter
+public sealed partial class V12ProjectAdapter : IProjectSaveDispatchAdapter
 {
     private readonly HashSet<object> pendingRegisteredOwners = new(ReferenceEqualityComparer.Instance);
 
@@ -52,10 +52,12 @@ public sealed partial class V12ProjectAdapter
         if (mapping.MapNativeModule(mapping.ResolveNativeModule(group.Address)) != group.Address)
             throw new BridgeException("NativeOwnerUnavailable", "Native ownership does not match the reviewed root.");
         guard.Value.RequireOwnedModule(reviewed, group.NativeModuleName);
+        ProjectSaveDiagnostic? failure = null;
         var matchesBaseline = apiTargetGroups.TryGetValue(group.NativeIdentity, out var previous)
-            ? previous.Current() : targetFiles.Value.Verify(group);
+            ? previous.Current() : targetFiles.Value.Verify(group, evidence => failure = evidence, "beforeMutation");
         if (!matchesBaseline)
-            throw new BridgeException(group.Address.Kind == ModuleKind.CustomLibrary ? "LibraryBaselineChanged" : "BaselineChanged", "Native root metadata must match the staged and saved group before editing.");
+            throw new BridgeException(group.Address.Kind == ModuleKind.CustomLibrary ? "LibraryBaselineChanged" : "BaselineChanged", "Native root metadata must match the staged and saved group before editing." +
+                (failure is null ? "" : $" Stage={failure.Stage}; fileRole={failure.FileRole}; reason={failure.Code}."));
         var register = await collaboration.Value.PrepareRegisteredEditFilesAsync(group, token);
         if (guard.Value.Capture().Revision != reviewed.Revision || !group.Current())
             throw new BridgeException("BaselineChanged", "The root or project changed during native ownership verification.");

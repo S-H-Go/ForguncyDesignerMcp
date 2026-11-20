@@ -26,3 +26,19 @@ Check(!Covers(Witness(owner, "Other.json")), "missing required file does not aut
 Check(!Covers(Witness(owner, file), ModuleKind.Report), "unrelated kinds cannot reuse the application witness");
 Check(!registered, "read-only tracking validation must not activate the registration callback");
 Console.WriteLine("PASS V12 LanguageResource canonical owner and review-only tracking");
+
+const string favicon = "favicon.ico";
+var sandbox = Path.Combine(Path.GetTempPath(), "mcp-save-evidence-" + Guid.NewGuid().ToString("N"));
+var staging = Path.Combine(sandbox, "staging");
+var source = Path.Combine(sandbox, "source");
+Directory.CreateDirectory(staging);
+Directory.CreateDirectory(source);
+File.WriteAllText(Path.Combine(source, favicon), "synthetic source");
+Check(NativeSaveVerification.FirstStagedSourceMismatch(staging, source, [favicon]) == (favicon, "StagedFileMissing"), "missing staged companion");
+File.WriteAllText(Path.Combine(staging, favicon), "synthetic staging");
+Check(NativeSaveVerification.FirstStagedSourceMismatch(staging, source, [favicon]) == (favicon, "StagingSourceMismatch"), "mismatched companion");
+File.WriteAllText(Path.Combine(staging, favicon), "synthetic source");
+Check(NativeSaveVerification.FirstStagedSourceMismatch(staging, source, [favicon]) is null, "matching companion stays valid");
+Check(NativeSaveVerification.ApplicationFileRole("Other/private.bin") == "applicationCompanion", "unreviewed paths are never exposed in the diagnostic role");
+Check(NativeSaveVerification.ApplicationFileRole(favicon) == favicon, "favicon displays only a fixed role");
+Console.WriteLine("PASS V12 fixed companion roles and staging/source diagnostics");

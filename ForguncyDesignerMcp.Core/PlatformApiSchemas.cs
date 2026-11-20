@@ -26,7 +26,11 @@ public static class PlatformApiSchemas
         var saveResult = Shape(new()
         {
             ["nativeSaveAccepted"] = Flag(), ["containsUnsavedChanges"] = Flag(), ["sourceVerified"] = Flag(), ["evidenceDirectory"] = Nullable(Text()),
-            ["savedSourceSha256"] = Nullable(new { type = "string", pattern = "^[A-Fa-f0-9]{64}$" })
+            ["savedSourceSha256"] = Nullable(new { type = "string", pattern = "^[A-Fa-f0-9]{64}$" }),
+            ["verificationFailure"] = Nullable(Shape(new()
+            {
+                ["stage"] = Text(), ["fileRole"] = Text(), ["code"] = Text()
+            }, "stage", "fileRole", "code"))
         }, "nativeSaveAccepted", "containsUnsavedChanges", "sourceVerified", "evidenceDirectory", "savedSourceSha256");
         var serviceResult = Shape(new()
         {

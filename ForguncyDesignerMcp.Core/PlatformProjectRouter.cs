@@ -352,8 +352,14 @@ public sealed partial class PlatformProjectRouter : IPlatformApiInvoker
         if (snapshot.Busy) throw new BridgeException("DesignerBusy", "Designer is busy.");
         if (snapshot.Revision != request.ExpectedProjectRevision) throw new BridgeException("BaselineChanged", "Project revision changed before save.");
         CheckExportServiceBinding(snapshot, request.ExpectedServiceBinding);
-        started();
-        var result = await adapter.SaveAsync(request, default);
+        ProjectSaveResult result;
+        if (adapter is IProjectSaveDispatchAdapter dispatch)
+            result = await dispatch.SaveWithDispatchAsync(request, started, default);
+        else
+        {
+            started(); // Legacy adapters have no narrower authoritative boundary.
+            result = await adapter.SaveAsync(request, default);
+        }
         var after = await SnapshotAsync(request.Target, default);
         var verified = result is { NativeSaveAccepted: true, ContainsUnsavedChanges: false, SourceVerified: true } &&
             !after.HasUnsavedChanges && VerifyExportBindingAfter(after, request.ExpectedServiceBinding);
@@ -361,7 +367,8 @@ public sealed partial class PlatformProjectRouter : IPlatformApiInvoker
         return PlatformJson.Element(new ModuleMutationReceipt(request.OperationId,
             verified ? "succeeded" : "verification_failed",
             verified ? "Saved" : "SaveUnconfirmed",
-            "Inspect native save acceptance and source verification separately.", SaveResult: result));
+            verified ? "Native save and source verification both passed." :
+                "Inspect saveResult on the original operation ID. Verification did not establish persistence; do not replay the save.", SaveResult: result));
     }
 
     private async Task CheckMutationAsync(ModuleMutationRequest request, CancellationToken token)
