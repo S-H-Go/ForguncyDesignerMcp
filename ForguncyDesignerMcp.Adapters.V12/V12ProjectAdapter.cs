@@ -512,6 +512,7 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
                 var permissionBefore = permissionConfig is null ? null : NativePermissionGroupGuard.ReadBindings(permissionConfig);
                 var fileCapture=targetFiles.Value.CaptureApiBefore(request.Namespace,request.Method,nativeParameters);
                 ValidateApiCapture(request.Namespace,request.Method,fileCapture);
+                NativePageReservationPreflight.Validate(context.DesignerAssembly, context.NativeDocument, writeState, request.Namespace, request.Method, nativeParameters, fileCapture);
                 RequirePreownedCapture(fileCapture);
                 var lifecyclePlan=fileCapture?.Operation is ModuleOperation.Create or ModuleOperation.Delete ||
                     fileCapture?.Plan?.NativeChanges?.Any(change=>change.GetType().GetField("Item2")?.GetValue(change)?.ToString() is "New" or "Remove")==true;

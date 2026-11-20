@@ -205,6 +205,7 @@ internal static class Program
         var tuple = tuples.Cast<object>().Single();
         var token = tuple.GetType().GetField("Item1")!.GetValue(tuple)!;
         Check(tuple.GetType().GetField("Item2")!.GetValue(tuple)!.ToString() == "New", "Native create page resolver produces its New token.");
+        VerifyPageReservationConflict(native, token, tuple);
         var root = Get(Get(settings, "Pages")!, "NormalPageRoot")!;
         var map = new NativeCollaborationModules(native, settings, Array.Empty<object>());
         Set(root, "Loaded", false);
@@ -220,6 +221,47 @@ internal static class Program
         Check(map.MapNativeModule(token) == new ModuleAddress(ModuleKind.Page, "FixturePageNew"),
             "A complete empty native owner tree accepts the same resolver-generated New token.");
         Console.WriteLine("PASS exact V12 createPage native New-owner mapping distinguishes lazy and complete roots.");
+    }
+
+    private static void VerifyPageReservationConflict(Assembly native, object token, object tuple)
+    {
+        const string name = "FixturePageNew";
+        var pairs = new (string, string)[] { ((string)Get(token, "ModuleName")!, Get(token, "ModuleType")!.ToString()!) };
+        var plan = new NativeModuleFilePlan([], pairs, nativeChanges: [tuple]);
+        var capture = new NativeApiFileCapture("page", "createPage", JsonSerializer.SerializeToElement(new { name }),
+            new(ModuleKind.Page, name), ModuleOperation.Create, null, plan);
+        Check(NativePageReservationPreflight.MatchesPlan(capture, name), "Native CreatePage resolver exact New tuple is within the guard.");
+        Check(!NativePageReservationPreflight.MatchesPlan(capture, "DifferentPage"), "Do not block unrelated plans.");
+
+        // The real pinned native validator accepts a fresh name, then refuses
+        // that same name once it appears in the authoritative shared-name list.
+        var validate = native.GetType("ace", true)!;
+        Func<(List<string>, bool)> empty = () => ([], true);
+        Func<(List<string>, bool)> reserved = () => ([name.ToUpperInvariant()], true);
+        NativeReflection.Static(validate, "EnsureSheetNameNotExists", name, "page", empty);
+        try
+        {
+            NativeReflection.Static(validate, "EnsureSheetNameNotExists", name, "page", reserved);
+            throw new InvalidOperationException("Native name validator accepted the New reservation.");
+        }
+        catch (ArgumentException) { }
+
+        Require("NativePageCreationReservationConflict", false, 0, false, true);
+        Require("NativePageNamePreviouslyReserved", false, 1, true, true);
+        Require("NativePageNameRegistered", false, 1, false, true);
+        Require("NativePageNameAlreadyExists", true, 1, true, true);
+        NativePageReservationPreflight.RequireEligible(false, 0, false, false);
+        Console.WriteLine("PASS exact V12 native page name validation after reservation and narrow remote-path guard.");
+
+        static void Require(string code, bool existing, int registrations, bool ownNew, bool exactPlan)
+        {
+            try
+            {
+                NativePageReservationPreflight.RequireEligible(existing, registrations, ownNew, exactPlan);
+                throw new InvalidOperationException("Expected settled guard " + code);
+            }
+            catch (BridgeException error) when (error.Code == code) { }
+        }
     }
 
 }

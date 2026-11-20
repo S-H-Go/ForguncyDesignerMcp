@@ -69,6 +69,10 @@ async Task VerifyPagePreflightBoundary()
         adapter.PendingPageEdits == 1 && !pages.IsPlatformExecutionUncertain(pageTarget.SessionId) &&
         pageRouter.GetOperation(prior.OperationId).State == "loaded_pending_save",
         "read-only lifecycle owner mapping denial does not quarantine the prior journal");
+    var reserved = await Update(false, "reservation");
+    Require(reserved is { State: "failed", Code: "NativePageCreationReservationConflict", ExecutionMayContinue: false } &&
+        adapter.PendingPageEdits == 1 && !pages.IsPlatformExecutionUncertain(pageTarget.SessionId),
+        "unsupported fresh page reservation stops before the dispatch callback and preserves the earlier journal");
     var save = new ProjectSaveRequest(Guid.NewGuid().ToString("D"), pageTarget, adapter.ProjectRevision);
     _ = await pageRouter.InvokeAsync("project", "snapshot", PlatformJson.Element(new { }));
     _ = await pageRouter.InvokeAsync("module", "save", PlatformJson.Element(save));
@@ -204,6 +208,8 @@ sealed class Adapter(ProjectTarget target) : IProjectAdapter, IProjectSaveDispat
     public Task<JsonElement> InvokeProjectApiAsync(PlatformApiRequest request, Action startingNativeWrite, CancellationToken token = default)
     {
         var ownerFailure = request.Parameters.GetProperty("ownerFailure");
+        if (ownerFailure.ValueKind == JsonValueKind.String && ownerFailure.GetString() == "reservation")
+            throw new BridgeException("NativePageCreationReservationConflict", "Simulated safe refusal of the unsupported New reservation.");
         if (ownerFailure.ValueKind == JsonValueKind.String && ownerFailure.GetString() == "before")
             throw new BridgeException("NativeCollaborationModuleUnavailable", "Simulated read-only new owner mapping denial.");
         startingNativeWrite();

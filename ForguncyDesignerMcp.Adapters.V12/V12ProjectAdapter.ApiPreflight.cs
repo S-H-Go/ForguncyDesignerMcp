@@ -46,6 +46,7 @@ public sealed partial class V12ProjectAdapter : IProjectApiDispatchAdapter
                 }
                 var capture = targetFiles.Value.CaptureApiBefore(request.Namespace, request.Method, nativeParameters);
                 ValidateApiCapture(request.Namespace, request.Method, capture);
+                NativePageReservationPreflight.Validate(context.DesignerAssembly, context.NativeDocument, state, request.Namespace, request.Method, nativeParameters, capture);
                 RequirePreownedCapture(capture);
                 _ = await PrepareApiOwnerAsync(capture, state, cancellationToken);
                 return true;
