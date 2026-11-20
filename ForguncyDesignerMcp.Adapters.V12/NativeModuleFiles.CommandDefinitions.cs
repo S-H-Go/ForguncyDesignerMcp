@@ -10,7 +10,7 @@ namespace ForguncyDesignerMcp.Adapters.V12;
 public sealed partial class NativeModuleFiles
 {
     internal static bool IsCommandDefinitionLifecycle(string ns,string method)=>
-        ns=="serverCommand" && method is "createServerCommand" or "deleteServerCommand" ||
+        ns=="serverCommand" && method is "createServerCommand" or "updateServerCommands" or "deleteServerCommand" ||
         ns=="sharedCommand" && method is "createSharedCommand" or "deleteSharedCommand" ||
         ns=="scheduledTask" && method=="createScheduledTask" ||
         ns=="notification" && method is "createNotification" or "updateNotification" or "deleteNotification";
@@ -44,7 +44,8 @@ public sealed partial class NativeModuleFiles
         }
         if(operation!=ModuleOperation.Create && before is null)
             throw new BridgeException("NativeDefinitionNotFound","The requested native definition is absent.");
-        RequirePureReferenceContext();
+        var nodeUpdate = ns == "serverCommand" && method == "updateServerCommands";
+        if (!nodeUpdate) RequirePureReferenceContext();
         if(operation==ModuleOperation.Delete || ns=="notification" && fields.TryGetValue("parameters",out var incoming) && incoming.ValueKind==JsonValueKind.Array)
             foreach(var definitionRoot in NativeResources.NativeDefinitionRoots(settings))
                 NativeScheduledTaskLifecycle.RequireLoaded(definitionRoot,new(ReferenceEqualityComparer.Instance));
@@ -55,6 +56,7 @@ public sealed partial class NativeModuleFiles
         var expectedResolver=method switch
         {
             "createServerCommand"=>"abe+ay","deleteServerCommand"=>"abe+az",
+            "updateServerCommands"=>"abe+bd",
             "createSharedCommand"=>"abe+bh","deleteSharedCommand"=>"abe+bi",
             "createScheduledTask"=>"abe+bx","createNotification"=>"abe+bn",
             "updateNotification"=>"abe+bq","deleteNotification"=>"abe+bo",_=>throw new InvalidOperationException()
@@ -63,6 +65,8 @@ public sealed partial class NativeModuleFiles
         if(resolver?.Assembly!=assembly || resolver.FullName!=expectedResolver)
             throw new BridgeException("NativeDefinitionContractChanged","The pinned native definition effect resolver changed.");
         var request=Activator.CreateInstance(requestType)!;
+        // For a node update, pinned abe+bd.Resolve reads only Name from the DTO;
+        // Updates and Permission are still validated/handled by the native dispatcher.
         R.Set(request,"Name",name);
         var folder=requestType.GetProperty("FolderPath",R.Flags);
         if(folder is not null) folder.SetValue(request,Scalar(fields,"folderPath"));
@@ -117,6 +121,19 @@ public sealed partial class NativeModuleFiles
             changes=((IEnumerable)R.Call(Activator.CreateInstance(resolver)!,"Resolve",request)!).Cast<object>().ToArray();
         }
         finally { previousPreference.SetValue(null,previousValue); }
+        if (nodeUpdate)
+        {
+            // The reviewed V12 resolver names exactly one existing Edit owner.
+            // Never accept a lifecycle or ambiguous plan for an in-place node update.
+            if (changes is not [var edit] || edit.GetType().GetField("Item2")?.GetValue(edit)?.ToString() != "Edit")
+                return null;
+            var editPlan = CaptureNativeModulesCore(changes, pageReferences: false);
+            if (editPlan?.BeforeGroups is not [var owner] ||
+                !ReferenceEquals(owner.NativeIdentity, before!.NativeIdentity) ||
+                editPlan.ExpectedNewModuleNames.Count != 0)
+                return null;
+            return new(ns, method, parameters.Clone(), address, operation, before, editPlan, [owner.NativeModuleName]);
+        }
         var plan=CaptureNativeModules(changes);
         if(plan is null) return null;
         if(operation==ModuleOperation.Create)
