@@ -33,6 +33,7 @@ internal static class Program
         var nativeState = native.GetType("s", true)!.GetProperty("Instance", Members)!.GetValue(null)!;
         Set(nativeState, "et", settings);
         VerifyLazyPageOwner(native, settings);
+        VerifyInternalTableOwnerPlan(native, settings);
         var colleagues = New("hl");
         var mediator = New("dt");
         var save = New("hu", Path.Combine(scratch, "fixture.fgcc"));
@@ -305,4 +306,37 @@ internal static class Program
         }
     }
 
+    private static void VerifyInternalTableOwnerPlan(Assembly native, object settings)
+    {
+        var sys = Assembly.Load("CommonUtilities").GetType("CommonUtilities.SystemConfigDef", true)!;
+        var provider = sys.GetProperty("ServerProvider", Members)!;
+        var before = provider.GetValue(null);
+        var service = Activator.CreateInstance(native.GetType("Forguncy.Common.DesignerStatusInfoTableService", true)!, true)!;
+        var root = Get(Get(settings, "TableSet")!, "Root")!;
+        var observer = new NativeTableDefinitionEffects(native);
+        var request = PlatformJson.Element(new { name = "FixtureInternalTable", columns = new[] { new { columnName = "Label", type = "Text" } } });
+        try
+        {
+            provider.SetValue(null, new NativeTableFixtureProvider(service));
+            Set(root, "Loaded", false);
+            Check(observer.TryResolve("table", "createTable", request, settings) is null &&
+                observer.UnavailableReason!.Contains("complete native table folder tree", StringComparison.Ordinal),
+                "Unloaded real SDK root refuses before native table checkout or SQLite effects.");
+            Check(Get(root, "Loaded") is false, "Read-only table planner did not change the detached root.");
+            Set(root, "Loaded", true); // Only the disposable native fixture, never a live project.
+            var plan = observer.TryResolve("table", "createTable", request, settings);
+            Check(plan is { Effects: [var created] } && created.RequiresCreatedTargetToken &&
+                created.State.ToString() == "New" && (string?)Get(created.Module, "ModuleName") == "Table/FixtureInternalTable",
+                "Genuine V12 executor resolves a sole New token from a proven complete empty native root.");
+            var external = PlatformJson.Element(new { name = "FixtureExternal", connectionId = "external" });
+            Check(observer.TryResolve("table", "createTable", external, settings) is null, "Do not add external-database creation to this internal route.");
+        }
+        finally { provider.SetValue(null, before); }
+        Console.WriteLine("PASS exact V12 internal table-owner planning denies lazy/external roots and resolves a complete empty native fixture.");
+    }
+
+    private sealed class NativeTableFixtureProvider(object nativeService) : IServiceProvider
+    {
+        public object? GetService(Type serviceType) => serviceType.IsInstanceOfType(nativeService) ? nativeService : null;
+    }
 }

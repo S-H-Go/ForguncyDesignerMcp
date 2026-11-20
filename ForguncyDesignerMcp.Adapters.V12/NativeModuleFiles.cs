@@ -821,10 +821,24 @@ public sealed partial class NativeModuleFiles
         var effect = NativeTableDefinitionEffects.IsReferenceUpdate(ns, method, parameters) ? helper.TryResolveReferenceUpdate(method, parameters, settings, RequirePureReferenceContext)
             : deleting ? helper.TryResolveDeletion(ns, method, parameters, settings, RequirePureReferenceContext)
             : helper.TryResolve(ns, method, parameters, settings);
-        if (effect is null) return null;
+        if (effect is null)
+        {
+            if (ns == "table" && method == "createTable")
+                throw new BridgeException("NativeTableCreatePlanUnavailable",
+                    (helper.UnavailableReason ?? "The exact native table creation owners are unavailable.") +
+                    " No checkout or table creation was dispatched.");
+            return null;
+        }
         if (effect.RequiresIncomingReferenceVeto) effect.RequireNoIncomingReferences();
         var native = effect.Effects.Select(x => x.NativeTuple).ToArray();
-        var plan = deleting ? CaptureNativeModules(native) : CaptureNativeModulesCore(native, false); if (plan is null) return null;
+        var plan = deleting ? CaptureNativeModules(native) : CaptureNativeModulesCore(native, false);
+        if (plan is null)
+        {
+            if (ns == "table" && method == "createTable")
+                throw new BridgeException("NativeTableCreateOwnerFilesUnavailable",
+                    "The exact native table creation owner files could not be captured. No checkout or table creation was dispatched.");
+            return null;
+        }
         var address = new ModuleAddress(ns == "table.view" ? ModuleKind.View : ModuleKind.Table, effect.TargetName);
         if (effect.RequiresCreatedTargetToken)
             plan = new(plan.BeforeGroups, plan.ExpectedNewModules, plan.ExpectedNewModules.ToDictionary(x => x.Name, _ => address, StringComparer.Ordinal), plan.NativeChanges);
