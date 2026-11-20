@@ -34,6 +34,7 @@ internal static class Program
         Set(nativeState, "et", settings);
         VerifyLazyPageOwner(native, settings);
         VerifyInternalTableOwnerPlan(native, settings);
+        VerifyFirstTableSqliteProof(site);
         var colleagues = New("hl");
         var mediator = New("dt");
         var save = New("hu", Path.Combine(scratch, "fixture.fgcc"));
@@ -339,4 +340,50 @@ internal static class Program
     {
         public object? GetService(Type serviceType) => serviceType.IsInstanceOfType(nativeService) ? nativeService : null;
     }
+    private static void VerifyFirstTableSqliteProof(string site)
+    {
+        static JsonElement Request(string? external = null, string type = "Text") =>
+            PlatformJson.Element(new { name = "FixtureTable", connectionId = external, columns = new[] { new { columnName = "Label", type } } });
+        Check(NativeFirstTableCreate.TryRequest(Request(), out var name, out var column) && name == "FixtureTable" && column == "Label",
+            "Only exact standalone-text column scope is admitted for first-table creation.");
+        Check(!NativeFirstTableCreate.TryRequest(Request("external"), out _, out _) &&
+            !NativeFirstTableCreate.TryRequest(Request(type: "Integer"), out _, out _),
+            "External or different SQL shape cannot use the narrow first-table route.");
+
+        var provider = Assembly.Load("SQLitePCLRaw.provider.e_sqlite3");
+        var nativePath = Path.Combine(site, "designerBin", "runtimes", "win-x64", "native", "e_sqlite3.dll");
+        System.Runtime.InteropServices.NativeLibrary.SetDllImportResolver(provider,
+            (library, _, _) => library == "e_sqlite3"
+                ? System.Runtime.InteropServices.NativeLibrary.Load(nativePath) : IntPtr.Zero);
+        var batteries = Assembly.Load("SQLitePCLRaw.batteries_v2").GetType("SQLitePCL.Batteries_V2", true)!;
+        NativeReflection.Static(batteries, "Init");
+        var path = Path.Combine(Path.GetTempPath(), "mcp-first-table-schema-" + Guid.NewGuid().ToString("N") + ".sqlite3");
+        try
+        {
+            using (var database = AccountAuthoritySnapshot.OpenSqlite(path, false))
+            {
+                using var command = database.CreateCommand();
+                command.CommandText = "PRAGMA user_version=1";
+                command.ExecuteNonQuery();
+                Check(NativeProcessAppDatabase.InspectReadOnlyTableSchema(path, null).Objects.Count == 0, "Exact provider confirms the SQLite schema starts empty.");
+                command.CommandText = "CREATE TABLE FixtureTable (ID INTEGER PRIMARY KEY AUTOINCREMENT, Label TEXT)";
+                command.ExecuteNonQuery();
+                var schema = NativeProcessAppDatabase.InspectReadOnlyTableSchema(path, "FixtureTable");
+                Check(NativeFirstTableCreate.MatchesSchema("FixtureTable", "Label", ["ID", "Label"], schema), "Physical SQLite and complete model columns agree.");
+                Check(!NativeFirstTableCreate.MatchesSchema("FixtureTable", "Missing", ["ID", "Label"], schema) &&
+                    !NativeFirstTableCreate.MatchesSchema("FixtureTable", "Label", ["Label"], schema), "Missing physical/model column evidence fails.");
+                command.CommandText = "INSERT INTO FixtureTable(Label) VALUES ('synthetic')";
+                command.ExecuteNonQuery();
+                Check(!NativeFirstTableCreate.MatchesSchema("FixtureTable", "Label", ["ID", "Label"],
+                    NativeProcessAppDatabase.InspectReadOnlyTableSchema(path, "FixtureTable")), "Unexpected rows fail.");
+                command.CommandText = "DELETE FROM FixtureTable; CREATE TABLE OtherTable (ID INTEGER)";
+                command.ExecuteNonQuery();
+                Check(!NativeFirstTableCreate.MatchesSchema("FixtureTable", "Label", ["ID", "Label"],
+                    NativeProcessAppDatabase.InspectReadOnlyTableSchema(path, "FixtureTable")), "Unrelated database object fails.");
+            }
+        }
+        finally { File.Delete(path); }
+        Console.WriteLine("PASS exact V12 SQLite provider first-table request and physical schema guards.");
+    }
+
 }

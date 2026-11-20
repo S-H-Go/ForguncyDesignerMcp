@@ -41,7 +41,10 @@ public sealed class NativeModuleFileGroup
 
 public sealed record NativeApiFileCapture(string Namespace, string Method, JsonElement Parameters,
     ModuleAddress Address, ModuleOperation Operation, NativeModuleFileGroup? Before, NativeModuleFilePlan? Plan = null,
-    IReadOnlyList<string>? RequiredOwnedModules = null);
+    IReadOnlyList<string>? RequiredOwnedModules = null)
+{
+    internal NativeFirstTableCreate? FirstTableCreate { get; init; }
+}
 
 public sealed class NativeModuleFilePlan
 {
@@ -814,11 +817,84 @@ public sealed partial class NativeModuleFiles
         return before is null ? null : new("page", method, parameters.Clone(), new(kind.Value, pageName), method == "deletePage" ? ModuleOperation.Delete : ModuleOperation.Update, before, plan);
     }
 
+    private NativeFirstTableCreate? CaptureFirstRemoteInternalTable(JsonElement parameters)
+    {
+        if (!NativeFirstTableCreate.TryRequest(parameters, out var name, out var column) || boundDocument is null)
+            return null;
+        var manager = assembly.GetType("Forguncy.Common.CollaborationManager", true)!.GetField("_instance", R.Flags)!.GetValue(null);
+        if (manager is null || R.Get(manager, "IsRemoteCollaboration") is not true) return null;
+        var source = (string)R.Call(save, "GetDocumentPath")!;
+        if (R.Get(manager, "InCollaborationMode") is not true || R.Get(manager, "Collaboration") is not { } collaboration ||
+            R.Get(collaboration, "WorkingDirectory") is not string working ||
+            !Path.GetFullPath(working).TrimEnd('\\','/').Equals(Path.GetFullPath(source).TrimEnd('\\','/'), StringComparison.OrdinalIgnoreCase))
+            throw NativeFirstTableCreate.Denied("The native project database and collaboration context do not match.");
+        if (R.Get(boundDocument, "ContainsUnsavedChanges") is not false)
+            throw NativeFirstTableCreate.Denied("The first-table route requires a clean native document.");
+        var tableSet = R.Get(settings, "TableSet")!;
+        var root = R.Get(tableSet, "Root")!;
+        if (NativeTableDefinitionEffects.RosterContainsItems(root) ||
+            ((IEnumerable)R.Get(tableSet, "RealTablesList")!).Cast<object>().Any())
+            return null; // Existing typed plan and eligibility stay intact.
+        if (Colleague(ModuleKind.Table) is not { } dc || !ReferenceEquals(R.Get(dc, "Root"), root) ||
+            ((IEnumerable)R.Get(settings, "DataConnectionSet")!).Cast<object>().Any())
+            throw NativeFirstTableCreate.Denied("The first-table route requires a bound empty table tree and no configured external connections.");
+        foreach (var directory in new[] { source, (string)R.Get(save, "LocalPath")!, (string)R.Get(save, "LastPath")! })
+        {
+            var contents = NativeSaveVerification.Under(directory, "Tables");
+            if (File.Exists(contents) || Directory.Exists(contents) && Directory.EnumerateFileSystemEntries(contents).Any())
+                throw NativeFirstTableCreate.Denied("A source, cache or staged table owner exists; the first-table route is outside scope.");
+        }
+        if (R.Call(manager, "EnumAllPageNames") is not ValueTuple<List<string>, bool> census || !census.Item2 || census.Item1 is null ||
+            census.Item1.Contains(name, StringComparer.OrdinalIgnoreCase))
+            throw NativeFirstTableCreate.Denied("The complete native shared table/page name inventory is not available or contains the requested name.");
+        var database = CaptureProcessAppDatabase();
+        database.RequireEmptyTableSchema();
+        return new(name, column, root, database);
+    }
+
+    internal NativeModuleFileGroup ReadFirstTableCreate(NativeApiFileCapture capture, JsonElement result, IReadOnlyList<NativeModuleFileGroup>? groups, out Action requirePending)
+    {
+        var first = capture.FirstTableCreate!;
+        if (!NativeFirstTableCreate.MatchesPlan(capture) || result.ValueKind != JsonValueKind.Object ||
+            !result.TryGetProperty("tableName", out var value) || value.ValueKind != JsonValueKind.String || value.GetString() != first.Name ||
+            groups is not [var table] || table.Address != capture.Address || !table.Current() ||
+            table.NativeIdentity.GetType().FullName != "Forguncy.Model.Tables.Table" ||
+            R.Get(table.NativeIdentity, "ExternalDatabaseInfo") is not null || R.Get(table.NativeIdentity, "IsLinkedTableOrLinkedView") is not false ||
+            !first.Database.StageAndSourceBeforeCurrent())
+            throw NativeFirstTableCreate.Denied("The exact native table, pending source or shared SQLite proof could not be correlated after dispatch.");
+        var tableSet = R.Get(settings, "TableSet")!;
+        if (!ReferenceEquals(R.Get(tableSet, "Root"), first.Root) ||
+            ((IEnumerable)R.Get(tableSet, "RealTablesList")!).Cast<object>().ToArray() is not [var only] ||
+            !ReferenceEquals(table.NativeIdentity, only))
+            throw NativeFirstTableCreate.Denied("The reviewed native table roster did not change by exactly one intended table.");
+        var columns = ((IEnumerable)R.Get(only, "Columns")!).Cast<object>()
+            .Select(col => (string)R.Get(col, "Name")!).ToArray();
+        var working = first.Database.CaptureAfter();
+        var schema = first.Database.ReadTableSchema(first.Name);
+        if (!NativeFirstTableCreate.MatchesSchema(first.Name, first.Column, columns, schema) ||
+            first.Database.CaptureAfter() != working || !first.Database.StageAndSourceBeforeCurrent() ||
+            !table.ReferencedFiles.Contains(first.Database.Name, StringComparer.Ordinal))
+            throw NativeFirstTableCreate.Denied("The application SQLite schema and native model are not the exact intended empty table and columns.");
+        requirePending = () =>
+        {
+            if (!table.Current() || first.Database.CaptureAfter() != working || !first.Database.StageAndSourceBeforeCurrent())
+                throw NativeFirstTableCreate.Denied("The intended table or shared SQLite evidence changed before native save; no save was dispatched.");
+        };
+        // Require the application SQLite data and staged/source copies to match
+        // the actual post-creation native snapshot on the later explicit save.
+        return new(table.Address, table.NativeModuleName, table.RequiredFiles, table.AbsentFiles,
+            table.ReferencedFiles.Where(path => path != first.Database.Name).ToArray(), table.ExpectedJson,
+            () => table.Current() && first.Database.VerifyAfter(working), table.MatchesContent, table.NativeIdentity, table.IsPresent,
+            table.RequiredDirectories, table.AbsentDirectories, table.DirectoriesRequireLocal);
+    }
+
     private NativeApiFileCapture? CaptureTableReferences(string ns, string method, JsonElement parameters)
     {
         var deleting = ns == "table" && method == "deleteTable" || ns == "table.view" && method == "delete";
+        var firstTable = ns == "table" && method == "createTable" ? CaptureFirstRemoteInternalTable(parameters) : null;
         var helper = new NativeTableDefinitionEffects(assembly);
-        var effect = NativeTableDefinitionEffects.IsReferenceUpdate(ns, method, parameters) ? helper.TryResolveReferenceUpdate(method, parameters, settings, RequirePureReferenceContext)
+        var effect = firstTable is not null ? helper.TryResolveFirstInternalCreate(parameters, settings, firstTable)
+            : NativeTableDefinitionEffects.IsReferenceUpdate(ns, method, parameters) ? helper.TryResolveReferenceUpdate(method, parameters, settings, RequirePureReferenceContext)
             : deleting ? helper.TryResolveDeletion(ns, method, parameters, settings, RequirePureReferenceContext)
             : helper.TryResolve(ns, method, parameters, settings);
         if (effect is null)
@@ -848,7 +924,7 @@ public sealed partial class NativeModuleFiles
         var owned = deleting ? effect.Effects.Where(x => ReferenceEquals(x.Model, application)).Select(x => (string)R.Get(x.Module, "ModuleName")!).Distinct(StringComparer.Ordinal).ToArray() : [];
         if (owned.Any(name => !plan.BeforeGroups.Any(group => group.NativeModuleName == name && group.Address.Kind == ModuleKind.ApplicationSettings))) return null;
         return new(ns, method, parameters.Clone(), address, deleting ? ModuleOperation.Delete : effect.RequiresCreatedTargetToken ? ModuleOperation.Create : ModuleOperation.Update,
-            before, plan, owned.Length == 0 ? null : owned);
+            before, plan, owned.Length == 0 ? null : owned) { FirstTableCreate = firstTable };
     }
 
     private NativeApiFileCapture? CaptureDefinitionReferences(string method, JsonElement parameters)

@@ -15,6 +15,7 @@ public sealed partial class V12ProjectAdapter : IProjectApiDispatchAdapter
             await OnUi(async () =>
             {
                 if (uncertain) throw new BridgeException("NativeExecutionUncertain", "A previous native operation is unconfirmed.");
+                RequireNoPendingFirstTableSave();
                 ValidateOperationId(request.OperationId);
                 var entry = registry.Entry(request.Namespace, request.Method);
                 if (!entry.MutatesProject || entry.Scope != EffectScope.ProjectDefinition)
@@ -48,6 +49,8 @@ public sealed partial class V12ProjectAdapter : IProjectApiDispatchAdapter
                 ValidateApiCapture(request.Namespace, request.Method, capture);
                 if (NativePageReservationPreflight.Validate(context.DesignerAssembly, context.NativeDocument, state, request.Namespace, request.Method, nativeParameters, capture))
                     targetFiles.Value.RequireNewDesktopPageFilesAbsent(capture!.Address.Name);
+                if (capture?.FirstTableCreate is not null && !NativeFirstTableCreate.MatchesPlan(capture))
+                    throw NativeFirstTableCreate.Denied("The native table executor did not prove the exact sole first-table New effect.");
                 RequirePreownedCapture(capture);
                 _ = await PrepareApiOwnerAsync(capture, state, cancellationToken);
                 return true;

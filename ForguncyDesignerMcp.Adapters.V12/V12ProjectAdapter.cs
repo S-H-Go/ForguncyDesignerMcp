@@ -33,6 +33,13 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
     private readonly Dictionary<string,ModuleAddress> pendingAddresses = new(StringComparer.Ordinal);
     private readonly HashSet<string> startedApiOperations = new(StringComparer.Ordinal);
     private bool apiPending;
+    private Action? firstTableSaveGuard;
+
+    private void RequireNoPendingFirstTableSave()
+    {
+        if (firstTableSaveGuard is not null)
+            throw new BridgeException("NativeFirstTablePendingSave", "Save and verify the new table and its shared SQLite source before another project write.");
+    }
     private bool apiFileGroupsKnown=true;
     private readonly Dictionary<object,NativeModuleFileGroup> apiTargetGroups = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<string,NativeModuleFileGroup> typedTargets = new(StringComparer.Ordinal);
@@ -467,6 +474,7 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
             {
                 if (uncertain) throw new BridgeException("NativeExecutionUncertain", "A previous native operation is unconfirmed; reconcile or reopen the document.");
                 ValidateOperationId(request.OperationId);
+                RequireNoPendingFirstTableSave();
                 if (startedApiOperations.Contains(request.OperationId!)) throw new BridgeException("OperationAlreadyStarted", "Native API operation has already started; inspect its result instead of retrying.");
                 if (request.Parameters.ValueKind != JsonValueKind.Object || !request.Parameters.TryGetProperty("guard", out var platform) || platform.ValueKind != JsonValueKind.Object)
                     throw new BridgeException("ProjectBaselineRequired", "Mutating APIs require the standard parameters.guard from a current project snapshot.");
@@ -513,24 +521,29 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
                 var fileCapture=targetFiles.Value.CaptureApiBefore(request.Namespace,request.Method,nativeParameters);
                 ValidateApiCapture(request.Namespace,request.Method,fileCapture);
                 var singleNativePageCreate = NativePageReservationPreflight.Validate(context.DesignerAssembly, context.NativeDocument, writeState, request.Namespace, request.Method, nativeParameters, fileCapture);
+                var singleNativeTableCreate = fileCapture?.FirstTableCreate is not null;
+                if (singleNativeTableCreate && !NativeFirstTableCreate.MatchesPlan(fileCapture!))
+                    throw NativeFirstTableCreate.Denied("The native table executor did not prove the exact sole first-table New effect.");
                 RequirePreownedCapture(fileCapture);
                 var lifecyclePlan=fileCapture?.Operation is ModuleOperation.Create or ModuleOperation.Delete ||
                     fileCapture?.Plan?.NativeChanges?.Any(change=>change.GetType().GetField("Item2")?.GetValue(change)?.ToString() is "New" or "Remove")==true;
                 var registerOwner = await PrepareApiOwnerAsync(fileCapture, writeState, cancellationToken);
-                NativeCollaboration.NativePageCreateProof? singleCreateProof = null;
-                if (singleNativePageCreate)
+                NativeCollaboration.NativeSingleCreateProof? singleCreateProof = null;
+                if (singleNativePageCreate || singleNativeTableCreate)
                 {
                     if (pending.Count != 0 || apiPending || pendingAccountExport is not null)
                         throw new BridgeException("NativePageCreatePrestateUnverified", "Native single-dispatch page creation cannot share a pending edit journal.");
-                    targetFiles.Value.RequireNewDesktopPageFilesAbsent(fileCapture!.Address.Name);
-                    singleCreateProof = await collaboration.Value.PrepareNativePageCreateAsync(request.OperationId!, writeState, fileCapture!, cancellationToken);
+                    if (singleNativePageCreate) targetFiles.Value.RequireNewDesktopPageFilesAbsent(fileCapture!.Address.Name);
+                    singleCreateProof = await collaboration.Value.PrepareNativeSingleCreateAsync(request.OperationId!, writeState, fileCapture!, cancellationToken);
                     await RevalidateApiGuard(request, mutation, cancellationToken);
                     var latestCapture = targetFiles.Value.CaptureApiBefore(request.Namespace, request.Method, nativeParameters);
                     if (latestCapture?.Address != fileCapture!.Address ||
-                        !NativePageReservationPreflight.Validate(context.DesignerAssembly, context.NativeDocument, writeState, request.Namespace, request.Method, nativeParameters, latestCapture))
-                        throw new BridgeException("NativePageCreatePrestateUnverified", "The exact native single-dispatch page plan changed before dispatch.");
-                    targetFiles.Value.RequireNewDesktopPageFilesAbsent(fileCapture.Address.Name);
-                    collaboration.Value.ConfirmNativePageCreatePrestate(singleCreateProof);
+                        (singleNativePageCreate && !NativePageReservationPreflight.Validate(context.DesignerAssembly, context.NativeDocument, writeState, request.Namespace, request.Method, nativeParameters, latestCapture)) ||
+                        (singleNativeTableCreate && (!NativeFirstTableCreate.MatchesPlan(latestCapture!) ||
+                            !fileCapture.FirstTableCreate!.Database.SameBaseline(latestCapture!.FirstTableCreate!.Database))))
+                        throw new BridgeException("NativeSingleCreatePrestateUnverified", "The exact native single-dispatch creation plan changed before dispatch.");
+                    if (singleNativePageCreate) targetFiles.Value.RequireNewDesktopPageFilesAbsent(fileCapture.Address.Name);
+                    collaboration.Value.ConfirmNativeSingleCreatePrestate(singleCreateProof);
                 }
                 else if(lifecyclePlan)
                 {
@@ -557,11 +570,11 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
                     }
                     catch (Exception error) when (singleCreateProof is not null && error is not (OutOfMemoryException or StackOverflowException))
                     {
-                        var observation = await collaboration.Value.ObserveFailedNativePageCreateAsync(singleCreateProof, error);
-                        throw new BridgeException("NativePageCreateDispatchUnverified",
+                        var observation = await collaboration.Value.ObserveFailedNativeSingleCreateAsync(singleCreateProof, error);
+                        throw new BridgeException(singleNativeTableCreate ? "NativeFirstTableCreateDispatchUnverified" : "NativePageCreateDispatchUnverified",
                             error.Message + " Native collaboration readback: " + observation);
                     }
-                    if (singleCreateProof is not null) await collaboration.Value.VerifyNativePageCreateAsync(singleCreateProof);
+                    if (singleCreateProof is not null) await collaboration.Value.VerifyNativeSingleCreateAsync(singleCreateProof);
                     if (registerOwner is not null && fileCapture!.Address.Kind == ModuleKind.CustomLibrary)
                     {
                         NativeModules.RegisterDirty(context.DesignerAssembly, "CustomLibrary");
@@ -574,10 +587,20 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
                         NativePermissionGroupGuard.VerifyBindings(permissionBefore!, NativePermissionGroupGuard.ReadBindings(permissionConfig!), permissionBindings);
                     }
                     var groups=fileCapture is null?null:targetFiles.Value.ResolveApiGroupsAfter(fileCapture);
-                    if (singleCreateProof is not null)
+                    if (singleNativePageCreate)
                         NativePageReservationPreflight.RequireCreatedPage(writeState, guard.Value.Capture(), singleCreateSource!,
                             NativeProjectGuard.SourceRevision(request.Target.ProjectPath, includeCollaboration: false),
                             result, fileCapture!.Address, fileCapture.Plan!.ExpectedNewModules.Single().Name, groups);
+                    if (singleNativeTableCreate)
+                    {
+                        var current = guard.Value.Capture();
+                        if (current.Target != writeState.Target || current.CurrentUser != writeState.CurrentUser || current.Busy ||
+                            !current.HasUnsavedChanges ||
+                            NativeProjectGuard.SourceRevision(request.Target.ProjectPath, includeCollaboration: false) != singleCreateSource)
+                            throw NativeFirstTableCreate.Denied("Native table creation did not preserve its bound context or pending-save evidence.");
+                        groups = [targetFiles.Value.ReadFirstTableCreate(fileCapture!, result, groups, out var requireFirstTableSave)];
+                        firstTableSaveGuard = requireFirstTableSave;
+                    }
                     if(guard.Value.Capture().InCollaborationMode && lifecyclePlan && groups is not { Count:>0 })
                         throw new BridgeException("NativeAffectedTargetsReadbackFailed","The native lifecycle mutation did not resolve every planned owner; do not replay it.");
                     if (registerOwner is not null)
@@ -602,6 +625,7 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
     {
         try
         {
+            RequireNoPendingFirstTableSave();
             ValidateOperationId(request.OperationId);
             if (uncertain) throw new BridgeException("NativeExecutionUncertain", "A previous native operation is unconfirmed.");
             if (request.Operation is not (ModuleOperation.Create or ModuleOperation.Update or ModuleOperation.Delete)) throw new BridgeException("InvalidMutation", "Mutation must be Create, Update or Delete.");
@@ -717,6 +741,7 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
                 throw new BridgeException("BaselineChanged", "The reviewed owner group changed before native save.");
             registrations.Add(register);
         }
+        firstTableSaveGuard?.Invoke();
         // The earlier checks only collect evidence. Registration can modify
         // transient tracking, so everything from here is conservatively dispatched.
         startingNativeWrite?.Invoke();
@@ -759,7 +784,7 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
             await CompleteSavedLibraryOwners(apiTargetGroups.Values);
         if(accepted && !dirty && verified && afterSave.InCollaborationMode)
             await RememberOwnedEditsAsync(apiTargetGroups.Values);
-        if (accepted && !dirty && verified) { pendingRegisteredOwners.Clear(); pending.Clear(); pendingAddresses.Clear(); typedTargets.Clear(); apiPending = false; apiFileGroupsKnown=true; apiTargetGroups.Clear(); apiPendingFiles.Clear(); pendingResourceOwnerNames.Clear(); pendingAccountExport=null; originalSourceRevision = null; ownDirtyRevision = null; }
+        if (accepted && !dirty && verified) { pendingRegisteredOwners.Clear(); pending.Clear(); pendingAddresses.Clear(); typedTargets.Clear(); apiPending = false; firstTableSaveGuard = null; apiFileGroupsKnown=true; apiTargetGroups.Clear(); apiPendingFiles.Clear(); pendingResourceOwnerNames.Clear(); pendingAccountExport=null; originalSourceRevision = null; ownDirtyRevision = null; }
         else if (originalSourceRevision is not null && originalSourceRevision != NativeProjectGuard.SourceRevision(context.CaptureSnapshot().Target.ProjectPath, includeCollaboration: false)) uncertain = true;
         else ownDirtyRevision = guard.Value.Capture().Revision;
         return new ProjectSaveResult(accepted, dirty, verified) { SavedSourceSha256=savedHash, VerificationFailure=verified ? null : verificationFailure };

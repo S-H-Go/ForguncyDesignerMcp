@@ -107,6 +107,7 @@ public sealed partial class V12ProjectAdapter
         {
             return await OnUi(async()=>
             {
+                RequireNoPendingFirstTableSave();
                 ValidateOperationId(request.OperationId);
                 if(uncertain) throw new BridgeException("NativeExecutionUncertain","Reconcile the existing native outcome before another collaboration write.");
                 var observed=guard.Value.Capture();

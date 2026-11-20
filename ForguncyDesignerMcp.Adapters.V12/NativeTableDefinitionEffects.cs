@@ -38,6 +38,12 @@ public sealed partial class NativeTableDefinitionEffects
         { UnavailableReason = error is BridgeException bridge ? bridge.Message : "The native table effect context or required service is unavailable."; return null; }
     }
 
+    internal NativeTableDefinitionEffectPlan? TryResolveFirstInternalCreate(JsonElement parameters, object nativeSettings, NativeFirstTableCreate proof)
+    {
+        try { var plan = Resolve("table", "createTable", parameters, nativeSettings, firstTable: proof); UnavailableReason = null; return plan; }
+        catch (Exception error) when (error is not OutOfMemoryException and not StackOverflowException)
+        { UnavailableReason = error is BridgeException bridge ? bridge.Message : "The native first-table effect context is unavailable."; return null; }
+    }
     /// <summary>
     /// Captures the exact native deletion resolver, including incoming owners.
     /// The host must pass its genuine pure-reference-context guard; it runs
@@ -61,7 +67,7 @@ public sealed partial class NativeTableDefinitionEffects
     }
 
     private NativeTableDefinitionEffectPlan Resolve(string ns, string method, JsonElement parameters, object settings,
-        Action? requirePureReferenceContext = null)
+        Action? requirePureReferenceContext = null, NativeFirstTableCreate? firstTable = null)
     {
         if (parameters.ValueKind != JsonValueKind.Object || settings.GetType() != assembly.GetType("lt", true)) throw Denied("A real native settings model and object parameters are required.");
         var create = ns == "table" && method == "createTable" || ns == "table.view" && method == "create";
@@ -99,8 +105,12 @@ public sealed partial class NativeTableDefinitionEffects
         var modelsAssembly = Assembly.Load("ServerDesignerCommon");
         if (tableSet.GetType() != modelsAssembly.GetType("Forguncy.Model.Tables.TableSet", true)) throw Denied("Unexpected native TableSet type.");
         var root = NativeReflection.Get(tableSet, "Root") ?? throw Denied("Native table root is unavailable.");
-        RequireLoaded(root);
+        if (firstTable is null) RequireLoaded(root);
+        else if (!create || ns != "table" || firstTable.Name != name || !ReferenceEquals(firstTable.Root, root) ||
+            RosterContainsItems(root) || !firstTable.Database.BeforeCurrent())
+            throw Denied("The exact empty native table root and application database witness changed.");
         var tables = ((IEnumerable)NativeReflection.Get(tableSet, "RealTablesList")!).Cast<object>().ToArray();
+        if (firstTable is not null && tables.Length != 0) throw Denied("The independently reviewed native table roster is no longer empty.");
         if (tables.Any(table => table.GetType() != modelsAssembly.GetType("Forguncy.Model.Tables.Table", true)) || tables.Select(TableName).Distinct(StringComparer.OrdinalIgnoreCase).Count() != tables.Length)
             throw Denied("The native table collection is ambiguous or contains an unknown model.");
         var target = tables.SingleOrDefault(table => string.Equals(TableName(table), name, StringComparison.Ordinal));
@@ -271,6 +281,7 @@ public sealed partial class NativeTableDefinitionEffects
         var service = provider?.GetService(contract);
         if (service?.GetType() != assembly.GetType("Forguncy.Common.DesignerStatusInfoTableService", true)) throw Denied("The genuine native IStatusInfoTableService is unavailable; no replacement or fabricated service is installed by this helper.");
     }
+    internal static bool RosterContainsItems(object root) => NativeReflection.Get(root, "Items") is not IEnumerable items || items.Cast<object>().Any();
     private static string TableName(object table) => (string)NativeReflection.Get(table, "Name")!;
     private static void RequireLoaded(object node)
     {

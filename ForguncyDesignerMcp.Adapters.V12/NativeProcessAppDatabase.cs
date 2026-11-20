@@ -40,6 +40,69 @@ internal sealed class NativeProcessAppDatabase
         var existing=proof.CaptureBaseline();
         return new(save,local,stage,source,name,existing);
     }
+    internal void RequireEmptyTableSchema()
+    {
+        if (before is null || !BeforeCurrent()) throw Denied("The independently verified native SQLite baseline is missing or changed.");
+        var schema = ReadTableSchema(null);
+        if (schema.Objects.Count != 0) throw Denied("The verified application SQLite schema is not empty.");
+        if (!BeforeCurrent()) throw Denied("The application SQLite baseline changed during schema inspection.");
+    }
+
+    internal bool StageAndSourceBeforeCurrent()
+    {
+        try
+        {
+            RequireRegistry();
+            RejectSidecars(stage, Name); RejectSourceSidecars(source, Name);
+            var path = NativeSaveVerification.Under(stage, Name);
+            using var saved = OpenSource(source, Name);
+            if (saved is null || !File.Exists(path)) return false;
+            using var staged = File.OpenRead(path);
+            return Fingerprint(staged) == before && Fingerprint(saved) == before;
+        }
+        catch (Exception error) when (error is not (OutOfMemoryException or StackOverflowException)) { return false; }
+    }
+
+    internal (IReadOnlyList<(string Kind, string Name, string Owner)> Objects, IReadOnlyList<(string Name, string Type)> Columns, bool EmptyRows) ReadTableSchema(string? table)
+    {
+        RequireRegistry();
+        var path = NativeSaveVerification.Under(local, Name);
+        RejectSidecars(local, Name);
+        var result = InspectReadOnlyTableSchema(path, table);
+        RejectSidecars(local, Name);
+        return result;
+    }
+
+    internal static (IReadOnlyList<(string Kind, string Name, string Owner)> Objects, IReadOnlyList<(string Name, string Type)> Columns, bool EmptyRows)
+        InspectReadOnlyTableSchema(string path, string? table)
+    {
+        using var db = AccountAuthoritySnapshot.OpenSqlite(path, true);
+        using var query = db.CreateCommand();
+        query.CommandText = "PRAGMA query_only=ON";
+        query.ExecuteNonQuery();
+        query.CommandText = "PRAGMA quick_check";
+        if (query.ExecuteScalar() as string != "ok") throw Denied("Application SQLite integrity check failed.");
+        query.CommandText = "SELECT type,name,tbl_name FROM sqlite_master ORDER BY type,name";
+        var objects = new List<(string, string, string)>();
+        using (var cursor = query.ExecuteReader())
+            while (cursor.Read()) objects.Add((cursor.GetString(0), cursor.GetString(1), cursor.GetString(2)));
+        var columns = new List<(string, string)>();
+        var emptyRows = false;
+        if (table is not null)
+        {
+            query.CommandText = "SELECT name,type FROM pragma_table_xinfo(@name) ORDER BY cid";
+            var param = query.CreateParameter(); param.ParameterName = "@name"; param.Value = table; query.Parameters.Add(param);
+            using (var cursor = query.ExecuteReader())
+                while (cursor.Read()) columns.Add((cursor.GetString(0), cursor.GetString(1)));
+            query.Parameters.Clear();
+            // Identifier can never close its quoted identifier even if the
+            // strongly restricted public planner changes in the future.
+            query.CommandText = "SELECT NOT EXISTS(SELECT 1 FROM \"" + table.Replace("\"", "\"\"") + "\" LIMIT 1)";
+            emptyRows = Convert.ToInt64(query.ExecuteScalar()) == 1;
+        }
+        return (objects, columns, emptyRows);
+    }
+
     internal bool SameBaseline(NativeProcessAppDatabase other)=>Name==other.Name && Equals(before,other.before) && ownerFiles.Count==other.ownerFiles.Count &&
         ownerFiles.All(pair=>other.ownerFiles.TryGetValue(pair.Key,out var otherFiles) && pair.Value.Count==otherFiles.Count &&
             pair.Value.All(file=>otherFiles.TryGetValue(file.Key,out var hash) && hash==file.Value));

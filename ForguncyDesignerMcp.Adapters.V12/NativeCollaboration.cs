@@ -83,49 +83,58 @@ public sealed class NativeCollaboration
 
     // Called by the owning adapter on its single writer and UI dispatcher.
     // A placeholder exists only in the *observer* input; never in native state.
-    internal sealed record NativePageCreateProof(CollaborationStatus Before, NativeCollaborationGitBaseline Git,
+    internal sealed record NativeSingleCreateProof(CollaborationStatus Before, NativeCollaborationGitBaseline Git,
         CollaborationMutationRequest Request, object[] Changes, string LockFingerprint);
 
-    internal async Task<NativePageCreateProof> PrepareNativePageCreateAsync(string operationId, ProjectSnapshot reviewed,
+    internal async Task<NativeSingleCreateProof> PrepareNativeSingleCreateAsync(string operationId, ProjectSnapshot reviewed,
         NativeApiFileCapture capture, CancellationToken token)
     {
         if (uncertain) throw Error("NativeExecutionUncertain", "A previous collaboration outcome is unverified.");
-        if (!NativePageReservationPreflight.MatchesPlan(capture, capture.Address.Name) || reviewed.HasUnsavedChanges || reviewed.Busy)
-            throw Error("NativePageCreatePrestateUnverified", "Remote page creation requires the exact sole New plan and a clean document.");
+        bool table = NativeFirstTableCreate.MatchesPlan(capture);
+        if (!(table || NativePageReservationPreflight.MatchesPlan(capture, capture.Address.Name)) || reviewed.HasUnsavedChanges || reviewed.Busy)
+            throw Error(table ? "NativeFirstTableCreateUnverified" : "NativePageCreatePrestateUnverified", "Remote native creation requires the exact sole New plan and a clean document.");
         var user = reviewed.CurrentUser ?? throw Error("CollaborationIdentityUnavailable", "Native collaboration identity is unavailable.");
         var nativeName = capture.Plan!.ExpectedNewModules.Single().Name;
         var request = new CollaborationMutationRequest(operationId, reviewed.Target, reviewed.Revision, user, [capture.Address]);
         var snapshot = RequireRequest(request, "checkout");
         var manager = RequireManager(snapshot);
         var before = CaptureNativeStatus(snapshot);
+        if (table)
+        {
+            static bool TableLike(object module) => NativeReflection.Get(module, "ModuleType")?.ToString() is
+                "Table" or "TableSqlite" or "TableView" or "TableProcessView" or "TableFolder";
+            var persisted = ReadPersistedModules((string)NativeReflection.Get(manager, "ModuleFilePath")!);
+            if (Registry(manager).Values.Cast<object>().Any(TableLike) || persisted.Any(TableLike))
+                throw NativeFirstTableCreate.Denied("A current or persisted native table owner already exists; no checkout was dispatched.");
+        }
         var fingerprint = LockFingerprint(manager);
         if (before.Modules.Any(x => x.Address == capture.Address || x.NativeModuleName.Equals(nativeName, StringComparison.OrdinalIgnoreCase)))
             throw Error("NativePageNameRegistered", "The planned page already has a native registration.");
         var placeholder = new CollaborationModuleState(capture.Address, nativeName, null, null, false);
         var baseline = await Git.PrepareCheckoutAsync(request, user, [..before.Modules, placeholder], token);
         if (!baseline.Git.IndexClean || baseline.Git.ChangedFiles is not { } files || files.Keys.Any(path => !path.StartsWith(".local/", StringComparison.Ordinal)))
-            throw Error("NativePageCreatePrestateUnverified", "Remote page creation requires a clean index and no changes outside unchanged local diagnostic files.");
+            throw Error(table ? "NativeFirstTableCreateUnverified" : "NativePageCreatePrestateUnverified", "Remote native creation requires a clean index and no changes outside unchanged local diagnostic files.");
         RequireDestination(manager, baseline.Git);
         await Git.RequireCurrentAsync(baseline, token);
         RequireStable(before, fingerprint);
         return new(before, baseline, request, capture.Plan.NativeChanges!.ToArray(), fingerprint);
     }
 
-    internal void ConfirmNativePageCreatePrestate(NativePageCreateProof plan) => RequireStable(plan.Before, plan.LockFingerprint);
+    internal void ConfirmNativeSingleCreatePrestate(NativeSingleCreateProof plan) => RequireStable(plan.Before, plan.LockFingerprint);
 
-    internal async Task<string> ObserveFailedNativePageCreateAsync(NativePageCreateProof plan, Exception error)
+    internal async Task<string> ObserveFailedNativeSingleCreateAsync(NativeSingleCreateProof plan, Exception error)
     {
         uncertain = true;
         var receipt = await VerifyAfterAsync(plan.Request, "checkout", plan.Before, plan.Git, null, false, plan.Changes, error);
         return receipt.Code + ": " + receipt.Message;
     }
-    internal async Task VerifyNativePageCreateAsync(NativePageCreateProof plan)
+    internal async Task VerifyNativeSingleCreateAsync(NativeSingleCreateProof plan)
     {
         var receipt = await VerifyAfterAsync(plan.Request, "checkout", plan.Before, plan.Git, true, false, plan.Changes, null);
         if (receipt.State != "succeeded" || !receipt.LockStateVerified || receipt.ExecutionMayContinue)
         {
             uncertain = true;
-            throw Error("NativePageCreateCollaborationUnverified", receipt.Code + ": " + receipt.Message);
+            throw Error(plan.Request.Modules.Single().Kind == ModuleKind.Table ? "NativeFirstTableCreateCollaborationUnverified" : "NativePageCreateCollaborationUnverified", receipt.Code + ": " + receipt.Message);
         }
     }
 
