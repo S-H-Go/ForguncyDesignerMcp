@@ -495,6 +495,7 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
                 // Reject deterministic payload errors before recording native
                 // execution as started; no native mutation has occurred here.
                 registry.ValidateRequestParameters(request.Namespace,request.Method,nativeParameters);
+                NativeListViewColumnPreflight.Validate(context.DesignerAssembly, request.Namespace, request.Method, nativeParameters);
                 var pageLoadEdit = await registry.PreparePageLoadAsync(request.Namespace, request.Method, nativeParameters, cancellationToken);
                 if (pageLoadEdit is not null) await RevalidateApiGuard(request, mutation, cancellationToken);
                 if(request.Namespace=="app.customLibrary" && NativeLibraryLifecycle.Supports(request.Method))

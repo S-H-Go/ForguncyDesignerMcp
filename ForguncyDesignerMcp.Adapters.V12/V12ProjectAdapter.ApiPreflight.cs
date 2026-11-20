@@ -38,6 +38,7 @@ public sealed partial class V12ProjectAdapter : IProjectApiDispatchAdapter
                 if (mutation.Address is not null)
                     RegistryModules.ValidateApiAddressGuard(request.Namespace, request.Method, nativeParameters, mutation.Address);
                 registry.ValidateRequestParameters(request.Namespace, request.Method, nativeParameters);
+                NativeListViewColumnPreflight.Validate(context.DesignerAssembly, request.Namespace, request.Method, nativeParameters);
                 if (NativePermissionGroupGuard.IsBindingMutation(request.Namespace, request.Method))
                 {
                     _ = NativePermissionGroupGuard.RequestedBindings(request.Method, nativeParameters);

@@ -25,6 +25,7 @@ internal static class Program
             .Select(part => Path.Combine(site, part, name.Name + ".dll")).Where(File.Exists)
             .Select(context.LoadFromAssemblyPath).FirstOrDefault();
         var native = AssemblyLoadContext.Default.LoadFromAssemblyPath(dll);
+        VerifyListViewColumnPreflight(native);
         object New(string type, params object[] values) => Activator.CreateInstance(native.GetType(type, true)!, Members, null, values, null)!;
         var scratch = Path.Combine(Path.GetTempPath(), "mcp-command-node-plan-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(scratch);
@@ -141,4 +142,55 @@ internal static class Program
         catch (BridgeException error) when (error.Code == code) { return; }
         throw new InvalidOperationException("Expected " + code);
     }
+    private static void VerifyListViewColumnPreflight(Assembly native)
+    {
+        const string formula = "=DemoPage!G5";
+        const string target = "DemoList";
+        using var data = JsonDocument.Parse("""
+            [{"commands":[{"type":"RequestServer","props":{"parameters":{"Item":"After"}}},
+              {"type":"Condition","branches":[{"predicate":{"type":"else"},"commands":[
+                {"type":"UpdateListview","props":{"listviewName":"DemoList","needUpdateValues":true,
+                 "updateValues":[{"column":"Customer","value":"A"},{"column":"=DemoPage!G5","value":"B"},
+                                 {"column":{"formula":"=DemoPage!G5"},"value":"C"}]}}]}]}]}]
+            """);
+        var found = NativeListViewColumnPreflight.Find(data.RootElement).Single();
+        Check(found == new NativeListViewColumnPreflight.Column(
+            "cells[0].commands[1].branches[0].commands[0].props.updateValues[1].column", target, formula),
+            "Identify only the reported string form at the exact nested path.");
+
+        var serializer = Assembly.Load("Newtonsoft.Json");
+        const string dsl = """
+            [{"type":"UpdateListview","props":{"listviewName":"DemoList","needUpdateValues":true,
+             "updateValues":[{"column":"=DemoPage!G5","value":"B"}]}}]
+            """;
+        var wire = NativeReflection.Static(serializer.GetType("Newtonsoft.Json.Linq.JArray", true)!, "Parse", dsl)!;
+        var parse = NativeReflection.Static(native.GetType("aaw", true)!, "ForPage", "DemoPage")!;
+        var tree = (IList)NativeReflection.Static(native.GetType("Forguncy.AI.Actions.CommandTreeHelper", true)!, "ParseCommands", wire, parse)!;
+        Check(Get(((IList)Get(tree[0]!, "UpdateValues")!)[0]!, "Column") is string text && text == formula,
+            "The exact installed V12 parser leaves the template formula string untyped.");
+
+        var scope = NativeReflection.Static(native.GetType("acq", true)!, "ForPage", "DemoPage")!;
+        var plugin = Assembly.Load("GrapeCity.Forguncy.Plugin");
+        var shape = plugin.GetType("GrapeCity.Forguncy.Plugin.IListViewInfoDesigner", true)!;
+        var list = (ColumnNamesProxy)DispatchProxy.Create(shape, typeof(ColumnNamesProxy));
+        list.Names = ["Customer"];
+        try
+        {
+            NativeListViewColumnPreflight.RequireNativeColumn(found, scope, list);
+            throw new InvalidOperationException("Expected native list-view column rejection.");
+        }
+        catch (BridgeException error) when (error.Code == "InvalidCommandTree" && error.Message.Contains(found.Path, StringComparison.Ordinal)) { }
+        NativeListViewColumnPreflight.RequireNativeColumn(found with { Value = "Customer" }, scope, list);
+        list.Names.Add(formula);
+        NativeListViewColumnPreflight.RequireNativeColumn(found, scope, list);
+        Console.WriteLine("Native V12 list-view formula-string column preflight passed.");
+    }
+
+    public class ColumnNamesProxy : DispatchProxy
+    {
+        internal List<string> Names = [];
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) =>
+            targetMethod?.Name == "GetAllColumnNames" ? Names : throw new NotSupportedException(targetMethod?.Name);
+    }
+
 }
