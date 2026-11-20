@@ -219,7 +219,7 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
                 },cancellationToken);
                 NativeApiFileCapture? lifecycleCapture=null;
                 NativeResourceOwnerCapture? resourceCapture=null;
-                NativeCollaboration.EditRegistration? registerGlobalOwner = null;
+                NativeCollaboration.EditRegistration? registerApplicationOwner = null;
                 NativeProcessLifecycle? processLifecycle=null;
                 NativeFolderLifecyclePlan? folderLifecycle=null;
                 NativeModuleFilePlan? firstProcessPlan=null;
@@ -270,12 +270,11 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
                         resourceCapture = resources.Value.CaptureCollaborationOwners(request, targetFiles.Value);
                         await CheckoutExistingPlanAsync(request.OperationId, request.Target, resourceCapture.Plan, cancellationToken);
                     }
-                    else if (request.Address.Kind == ModuleKind.GlobalVariable)
+                    else if (RegisteredApplicationOwner(request.Address.Kind) is not null)
                     {
                         var state = guard.Value.RequireWrite(request.Target, request.ExpectedProjectRevision, request.ExpectedUser,
                             allowDirty: (pending.Count != 0 || apiPending) && request.ExpectedProjectRevision == ownDirtyRevision);
-                        var group = targetFiles.Value.Resolve(NativeModuleFiles.ApplicationRoot)!;
-                        registerGlobalOwner = await PrepareRootTrackingAsync(group, state, cancellationToken);
+                        registerApplicationOwner = await PrepareApplicationModuleOwnerAsync(request.Address.Kind, state, cancellationToken);
                     }
                     else if(request.Address.Kind is ModuleKind.PermissionGroup or ModuleKind.CustomLibrary)
                     {
@@ -336,7 +335,7 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
                 IReadOnlyList<string> files;
                 try
                 {
-                    registerGlobalOwner?.Register();
+                    registerApplicationOwner?.Register();
                     if(firstProcessPlan is not null)
                         files=await processes.Value.InitializeFirstProcessAsync(() => processLifecycle!.RequireSameFirstInitializationPlan(request,firstProcessPlan),()=>processes.Value.Apply(request));
                     else if (request.Address.Kind == ModuleKind.Report) files = reports.Value.Apply(request);
@@ -378,11 +377,11 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
                     }
                     else if((UsesNativeModules(request.Address.Kind) || request.Address.Kind == ModuleKind.DataConnection)&&NativeModuleFiles.Supports(request.Address.Kind))
                     {
-                        var ownerAddress = registerGlobalOwner is null ? request.Address : NativeModuleFiles.ApplicationRoot;
+                        var ownerAddress = registerApplicationOwner is null ? request.Address : NativeModuleFiles.ApplicationRoot;
                         if (targetFiles.Value.Resolve(ownerAddress) is { } finalGroup)
                         {
                             RecordFileGroup(finalGroup); typedTargets[request.OperationId] = finalGroup;
-                            if (registerGlobalOwner is not null) pendingRegisteredOwners.Add(finalGroup.NativeIdentity);
+                            if (registerApplicationOwner is not null) pendingRegisteredOwners.Add(finalGroup.NativeIdentity);
                         }
                     }
                     else if(request.Address.Kind is not (ModuleKind.DataConnection or ModuleKind.ResourceFile or ModuleKind.Folder or ModuleKind.Plugin)&&!UsesNativeModules(request.Address.Kind))
@@ -634,11 +633,11 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
             }
             if (UsesNativeModules(request.Address.Kind))
             {
-                if (state.InCollaborationMode && request.Address.Kind == ModuleKind.GlobalVariable)
+                if (state.InCollaborationMode && RegisteredApplicationOwner(request.Address.Kind) is not null)
                 {
-                    ValidateGlobalVariable(request.Address, request.Operation, exactName: true);
-                    var group = targetFiles.Value.Resolve(NativeModuleFiles.ApplicationRoot)!;
-                    var registration = await PrepareRootTrackingAsync(group, state, cancellationToken);
+                    if (request.Address.Kind == ModuleKind.GlobalVariable)
+                        ValidateGlobalVariable(request.Address, request.Operation, exactName: true);
+                    var registration = await PrepareApplicationModuleOwnerAsync(request.Address.Kind, state, cancellationToken);
                     return modules.Value.Validate(request, registration);
                 }
                 guard.Value.RequireOwnedModule(state, modules.Value.GetModuleName(request.Address));

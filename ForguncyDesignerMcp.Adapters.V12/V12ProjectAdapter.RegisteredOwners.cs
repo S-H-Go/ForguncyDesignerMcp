@@ -34,6 +34,18 @@ public sealed partial class V12ProjectAdapter
         return await PrepareRootTrackingAsync(group, reviewed, token);
     }
 
+    internal static ModuleAddress? RegisteredApplicationOwner(ModuleKind kind) =>
+        kind is ModuleKind.GlobalVariable or ModuleKind.LanguageResource ? NativeModuleFiles.ApplicationRoot : null;
+
+    private Task<NativeCollaboration.EditRegistration> PrepareApplicationModuleOwnerAsync(ModuleKind kind, ProjectSnapshot reviewed, CancellationToken token)
+    {
+        var address = RegisteredApplicationOwner(kind) ??
+            throw new BridgeException("NativeOwnerUnavailable", "No registered application owner exists for this logical module kind.");
+        var group = targetFiles.Value.Resolve(address) ??
+            throw new BridgeException("NativeOwnerUnavailable", "The registered native application owner and file group are required.");
+        return PrepareRootTrackingAsync(group, reviewed, token);
+    }
+
     private async Task<NativeCollaboration.EditRegistration> PrepareRootTrackingAsync(NativeModuleFileGroup group, ProjectSnapshot reviewed, CancellationToken token)
     {
         var mapping = collaborationModules.Value;

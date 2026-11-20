@@ -316,10 +316,15 @@ public sealed class NativeModules
         bool registered = reviewedTracking is null
             ? Get(manager, "SaveLoadTrackedFiles") is IDictionary tracked && tracked[name] is IEnumerable files &&
                 files.Cast<string>().Any(path => NativeSaveVerification.Relative(source!, path) == SourceFile(address))
-            : address.Kind == ModuleKind.GlobalVariable && reviewedTracking.Owner == name && reviewedTracking.Files.Contains(SourceFile(address));
+            : CoversReviewedApplicationTracking(address.Kind, name, SourceFile(address), reviewedTracking);
         if (Call(manager, "IsModuleCheckoutByCurrentUser", name) is not true || !registered)
             throw new BridgeException("NativeSaveTrackingMissing", "The settings root must be checked out by the current user with its exact native file-save tracking registered.");
     }
+
+    internal static bool CoversReviewedApplicationTracking(ModuleKind kind, string nativeName, string sourceFile,
+        NativeCollaboration.EditRegistration reviewedTracking) =>
+        V12ProjectAdapter.RegisteredApplicationOwner(kind) is not null &&
+        reviewedTracking.Owner == nativeName && reviewedTracking.Files.Contains(sourceFile);
 
     private object Prepare(ModuleAddress address, JsonElement metadata)
     {
