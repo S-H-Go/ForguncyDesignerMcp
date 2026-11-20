@@ -246,18 +246,44 @@ internal static class Program
         }
         catch (ArgumentException) { }
 
-        Require("NativePageCreationReservationConflict", false, 0, false, true);
-        Require("NativePageNamePreviouslyReserved", false, 1, true, true);
-        Require("NativePageNameRegistered", false, 1, false, true);
-        Require("NativePageNameAlreadyExists", true, 1, true, true);
-        NativePageReservationPreflight.RequireEligible(false, 0, false, false);
+        NativePageReservationPreflight.RequireEligible(false, 0, false);
+        NativePageReservationPreflight.RequireCompleteNameInventory((new List<string> { "DifferentPage" }, true), name);
+        MustRefuse("NativePageNameInventoryUnverified", () =>
+            NativePageReservationPreflight.RequireCompleteNameInventory((new List<string>(), false), name));
+        MustRefuse("NativePageNameAlreadyExists", () =>
+            NativePageReservationPreflight.RequireCompleteNameInventory((new List<string> { name.ToUpperInvariant() }, true), name));
+
+        var target = new ProjectTarget("fixture", "document", Path.GetFullPath("fixture"), "12.0.102.0");
+        var user = new UserIdentity("fixture", "fixture@example.invalid");
+        var snapshot = new ProjectSnapshot(target, false, false, true, user, "before");
+        var dirty = snapshot with { HasUnsavedChanges = true, Revision = "after" };
+        var group = new NativeModuleFileGroup(capture.Address, pairs[0].Item1, ["fixture.json", "fixture.rd"], [], [],
+            new Dictionary<string, string>(), () => true);
+        var result = PlatformJson.Element(new { pageName = name });
+        NativePageReservationPreflight.RequireCreatedPage(snapshot, dirty, "source", "source", result, capture.Address, pairs[0].Item1, [group]);
+        MustRefuse("NativePageCreateReadbackUnverified", () =>
+            NativePageReservationPreflight.RequireCreatedPage(snapshot, snapshot, "source", "source", result, capture.Address, pairs[0].Item1, [group]));
+        MustRefuse("NativePageCreateReadbackUnverified", () =>
+            NativePageReservationPreflight.RequireCreatedPage(snapshot, dirty, "source", "changed", result, capture.Address, pairs[0].Item1, [group]));
+        MustRefuse("NativePageCreateOwnerUnverified", () =>
+            NativePageReservationPreflight.RequireCreatedPage(snapshot, dirty, "source", "source", result, capture.Address, pairs[0].Item1, []));
+        Require("NativePageNamePreviouslyReserved", false, 1, true);
+        Require("NativePageNameRegistered", false, 1, false);
+        Require("NativePageNameAlreadyExists", true, 1, true);
+
         Console.WriteLine("PASS exact V12 native page name validation after reservation and narrow remote-path guard.");
 
-        static void Require(string code, bool existing, int registrations, bool ownNew, bool exactPlan)
+        static void MustRefuse(string code, Action action)
+        {
+            try { action(); throw new InvalidOperationException("Expected refusal " + code); }
+            catch (BridgeException error) when (error.Code == code) { }
+        }
+
+        static void Require(string code, bool existing, int registrations, bool ownNew)
         {
             try
             {
-                NativePageReservationPreflight.RequireEligible(existing, registrations, ownNew, exactPlan);
+                NativePageReservationPreflight.RequireEligible(existing, registrations, ownNew);
                 throw new InvalidOperationException("Expected settled guard " + code);
             }
             catch (BridgeException error) when (error.Code == code) { }

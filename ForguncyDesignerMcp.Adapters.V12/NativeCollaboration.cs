@@ -81,6 +81,54 @@ public sealed class NativeCollaboration
         IReadOnlyList<string>? reviewedAdditionalFiles = null, Action<NativeCollaborationGitBaseline>? verifySavedProjection = null) =>
         ExecuteAsync("checkin", request, null, saveAndVerifySource, cancellationToken, null, null, reviewedAdditionalFiles, verifySavedProjection: verifySavedProjection);
 
+    // Called by the owning adapter on its single writer and UI dispatcher.
+    // A placeholder exists only in the *observer* input; never in native state.
+    internal sealed record NativePageCreateProof(CollaborationStatus Before, NativeCollaborationGitBaseline Git,
+        CollaborationMutationRequest Request, object[] Changes, string LockFingerprint);
+
+    internal async Task<NativePageCreateProof> PrepareNativePageCreateAsync(string operationId, ProjectSnapshot reviewed,
+        NativeApiFileCapture capture, CancellationToken token)
+    {
+        if (uncertain) throw Error("NativeExecutionUncertain", "A previous collaboration outcome is unverified.");
+        if (!NativePageReservationPreflight.MatchesPlan(capture, capture.Address.Name) || reviewed.HasUnsavedChanges || reviewed.Busy)
+            throw Error("NativePageCreatePrestateUnverified", "Remote page creation requires the exact sole New plan and a clean document.");
+        var user = reviewed.CurrentUser ?? throw Error("CollaborationIdentityUnavailable", "Native collaboration identity is unavailable.");
+        var nativeName = capture.Plan!.ExpectedNewModules.Single().Name;
+        var request = new CollaborationMutationRequest(operationId, reviewed.Target, reviewed.Revision, user, [capture.Address]);
+        var snapshot = RequireRequest(request, "checkout");
+        var manager = RequireManager(snapshot);
+        var before = CaptureNativeStatus(snapshot);
+        var fingerprint = LockFingerprint(manager);
+        if (before.Modules.Any(x => x.Address == capture.Address || x.NativeModuleName.Equals(nativeName, StringComparison.OrdinalIgnoreCase)))
+            throw Error("NativePageNameRegistered", "The planned page already has a native registration.");
+        var placeholder = new CollaborationModuleState(capture.Address, nativeName, null, null, false);
+        var baseline = await Git.PrepareCheckoutAsync(request, user, [..before.Modules, placeholder], token);
+        if (!baseline.Git.IndexClean || baseline.Git.ChangedFiles is not { } files || files.Keys.Any(path => !path.StartsWith(".local/", StringComparison.Ordinal)))
+            throw Error("NativePageCreatePrestateUnverified", "Remote page creation requires a clean index and no changes outside unchanged local diagnostic files.");
+        RequireDestination(manager, baseline.Git);
+        await Git.RequireCurrentAsync(baseline, token);
+        RequireStable(before, fingerprint);
+        return new(before, baseline, request, capture.Plan.NativeChanges!.ToArray(), fingerprint);
+    }
+
+    internal void ConfirmNativePageCreatePrestate(NativePageCreateProof plan) => RequireStable(plan.Before, plan.LockFingerprint);
+
+    internal async Task<string> ObserveFailedNativePageCreateAsync(NativePageCreateProof plan, Exception error)
+    {
+        uncertain = true;
+        var receipt = await VerifyAfterAsync(plan.Request, "checkout", plan.Before, plan.Git, null, false, plan.Changes, error);
+        return receipt.Code + ": " + receipt.Message;
+    }
+    internal async Task VerifyNativePageCreateAsync(NativePageCreateProof plan)
+    {
+        var receipt = await VerifyAfterAsync(plan.Request, "checkout", plan.Before, plan.Git, true, false, plan.Changes, null);
+        if (receipt.State != "succeeded" || !receipt.LockStateVerified || receipt.ExecutionMayContinue)
+        {
+            uncertain = true;
+            throw Error("NativePageCreateCollaborationUnverified", receipt.Code + ": " + receipt.Message);
+        }
+    }
+
     private async Task<CollaborationMutationReceipt> ExecuteAsync(string operation, CollaborationMutationRequest request,
         IEnumerable? nativeChanges, Func<CancellationToken, Task<bool>>? saveAndVerifySource, CancellationToken token, IReadOnlyDictionary<string,IReadOnlyList<string>>? cancellationFiles, IReadOnlyDictionary<string,IReadOnlyList<string>>? cancellationDirectories, IReadOnlyList<string>? reviewedAdditionalFiles, Action? startingNativeWrite = null, Action<NativeCollaborationGitBaseline>? verifySavedProjection = null)
     {

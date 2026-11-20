@@ -8,20 +8,20 @@ using R = ForguncyDesignerMcp.Adapters.V12.NativeReflection;
 namespace ForguncyDesignerMcp.Adapters.V12;
 
 // In this exact lifecycle, explicit MCP New checkout inserts a name before
-// V12's native dispatcher checks the shared page/table name inventory. Deny
-// the currently unsupported double path rather than leave a New reservation.
+// V12's native dispatcher checks the shared page/table name inventory. Select
+// the exact native single-dispatch route without weakening the name check.
 internal static class NativePageReservationPreflight
 {
-    internal static void Validate(Assembly designer, object document, ProjectSnapshot snapshot,
+    internal static bool Validate(Assembly designer, object document, ProjectSnapshot snapshot,
         string ns, string method, JsonElement input, NativeApiFileCapture? capture)
     {
         if (!snapshot.InCollaborationMode || ns != "page" || method != "createPage" ||
             Text(input, "type") is not (null or "normal") || !string.IsNullOrEmpty(Text(input, "folderPath")) ||
             input.EnumerateObject().Any(p => p.Name.Equals("isMobilePage", StringComparison.OrdinalIgnoreCase) && p.Value.ValueKind == JsonValueKind.True) ||
-            Text(input, "name") is not { Length: > 0 } name) return;
+            Text(input, "name") is not { Length: > 0 } name) return false;
         var manager = designer.GetType("Forguncy.Common.CollaborationManager", true)!.GetField("_instance", R.Flags)!.GetValue(null)
             ?? throw new BridgeException("CollaborationUnavailable", "Native collaboration must be initialized for the reviewed document.");
-        if (R.Get(manager, "IsRemoteCollaboration") is not true) return;
+        if (R.Get(manager, "IsRemoteCollaboration") is not true) return false;
         if (R.Get(manager, "InCollaborationMode") is not true || R.Get(manager, "Collaboration") is not { } collaboration ||
             R.Get(collaboration, "WorkingDirectory") is not string working ||
             !string.Equals(Path.GetFullPath(working), Path.GetFullPath(snapshot.Target.ProjectPath), StringComparison.OrdinalIgnoreCase))
@@ -53,7 +53,36 @@ internal static class NativePageReservationPreflight
             R.Get(existing, "LockedBy") is { } signature && snapshot.CurrentUser is { } actor &&
             (string?)R.Get(signature, "UserName") == actor.UserName && (string?)R.Get(signature, "Email") == actor.Email;
 
-        RequireEligible(realModel, matches.Length, priorOwnNew, MatchesPlan(capture, name));
+        var exact = MatchesPlan(capture, name);
+        RequireEligible(realModel, matches.Length, priorOwnNew);
+        if (!exact) return false;
+        if (snapshot.HasUnsavedChanges || snapshot.Busy)
+            throw new BridgeException("NativePageCreatePrestateUnverified", "Native single-dispatch page creation requires a clean, idle document.");
+        // Ask the pinned native shared-name census for a complete answer.
+        // This read does not reserve a name or run the checkout executor.
+        RequireCompleteNameInventory(R.Call(manager, "EnumAllPageNames"), name);
+        return true;
+    }
+
+    internal static void RequireCompleteNameInventory(object? result, string name)
+    {
+        if (result is not ValueTuple<List<string>, bool> census || !census.Item2 || census.Item1 is null)
+            throw new BridgeException("NativePageNameInventoryUnverified", "The native shared page/table name inventory is incomplete.");
+        if (census.Item1.Any(item => SameName(item, name)))
+            throw new BridgeException("NativePageNameAlreadyExists", "The native shared page/table inventory already contains the name; no checkout was dispatched.");
+    }
+
+    internal static void RequireCreatedPage(ProjectSnapshot before, ProjectSnapshot after, string beforeSource, string afterSource,
+        JsonElement result, ModuleAddress expected, string expectedNativeName, IReadOnlyList<NativeModuleFileGroup>? groups)
+    {
+        if (after.Target != before.Target || after.CurrentUser != before.CurrentUser || after.Busy ||
+            !after.HasUnsavedChanges || beforeSource != afterSource ||
+            result.ValueKind != JsonValueKind.Object || !result.TryGetProperty("pageName", out var created) ||
+            created.ValueKind != JsonValueKind.String || created.GetString() != expected.Name)
+            throw new BridgeException("NativePageCreateReadbackUnverified", "Native creation did not preserve its reviewed target or pending-save evidence; do not replay.");
+        if (groups is not [var group] || group.Address != expected || !group.Current() ||
+            group.NativeModuleName != expectedNativeName)
+            throw new BridgeException("NativePageCreateOwnerUnverified", "The exact native page source file group was not verified; do not replay.");
     }
 
     internal static bool MatchesPlan(NativeApiFileCapture? capture, string name) =>
@@ -65,7 +94,7 @@ internal static class NativePageReservationPreflight
         token.GetType().FullName == "Forguncy.Common.SimpleModule" &&
         (string?)R.Get(token, "ModuleName") == created.Name && R.Get(token, "ModuleType")?.ToString() == created.Type;
 
-    internal static void RequireEligible(bool existingModel, int registeredMatches, bool ownedNew, bool exactNewPlan)
+    internal static void RequireEligible(bool existingModel, int registeredMatches, bool ownedNew)
     {
         if (existingModel)
             throw new BridgeException("NativePageNameAlreadyExists", "A page or table already uses this name. No checkout or page creation was dispatched.");
@@ -74,9 +103,6 @@ internal static class NativePageReservationPreflight
                 ownedNew
                     ? "A prior collaboration New registration already holds this name. Reconcile that original operation; it is not proof of this request's ownership. No checkout or page creation was dispatched."
                     : "An existing collaboration registration holds this name. No checkout or page creation was dispatched.");
-        if (exactNewPlan)
-            throw new BridgeException("NativePageCreationReservationConflict",
-                "This V12 remote page-create path would register the name before native duplicate validation. No checkout or page creation was dispatched.");
     }
 
     private static bool SameName(string? x, string y) => string.Equals(x, y, StringComparison.OrdinalIgnoreCase);

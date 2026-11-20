@@ -512,18 +512,32 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
                 var permissionBefore = permissionConfig is null ? null : NativePermissionGroupGuard.ReadBindings(permissionConfig);
                 var fileCapture=targetFiles.Value.CaptureApiBefore(request.Namespace,request.Method,nativeParameters);
                 ValidateApiCapture(request.Namespace,request.Method,fileCapture);
-                NativePageReservationPreflight.Validate(context.DesignerAssembly, context.NativeDocument, writeState, request.Namespace, request.Method, nativeParameters, fileCapture);
+                var singleNativePageCreate = NativePageReservationPreflight.Validate(context.DesignerAssembly, context.NativeDocument, writeState, request.Namespace, request.Method, nativeParameters, fileCapture);
                 RequirePreownedCapture(fileCapture);
                 var lifecyclePlan=fileCapture?.Operation is ModuleOperation.Create or ModuleOperation.Delete ||
                     fileCapture?.Plan?.NativeChanges?.Any(change=>change.GetType().GetField("Item2")?.GetValue(change)?.ToString() is "New" or "Remove")==true;
                 var registerOwner = await PrepareApiOwnerAsync(fileCapture, writeState, cancellationToken);
-                if(lifecyclePlan)
+                NativeCollaboration.NativePageCreateProof? singleCreateProof = null;
+                if (singleNativePageCreate)
+                {
+                    if (pending.Count != 0 || apiPending || pendingAccountExport is not null)
+                        throw new BridgeException("NativePageCreatePrestateUnverified", "Native single-dispatch page creation cannot share a pending edit journal.");
+                    singleCreateProof = await collaboration.Value.PrepareNativePageCreateAsync(request.OperationId!, writeState, fileCapture!, cancellationToken);
+                    await RevalidateApiGuard(request, mutation, cancellationToken);
+                    var latestCapture = targetFiles.Value.CaptureApiBefore(request.Namespace, request.Method, nativeParameters);
+                    if (latestCapture?.Address != fileCapture!.Address ||
+                        !NativePageReservationPreflight.Validate(context.DesignerAssembly, context.NativeDocument, writeState, request.Namespace, request.Method, nativeParameters, latestCapture))
+                        throw new BridgeException("NativePageCreatePrestateUnverified", "The exact native single-dispatch page plan changed before dispatch.");
+                    collaboration.Value.ConfirmNativePageCreatePrestate(singleCreateProof);
+                }
+                else if(lifecyclePlan)
                 {
                     await CheckoutLifecyclePlanAsync(request.OperationId!,request.Target,fileCapture?.Plan,cancellationToken,startingNativeWrite);
                 }
                 else if (registerOwner is null)
                     await CheckoutExistingPlanAsync(request.OperationId!,request.Target,fileCapture?.Plan ??
                     (request.Namespace=="page" && request.Method=="updatePageSettings" && fileCapture?.Before is { } page ? new NativeModuleFilePlan([page],[]) : null),cancellationToken,startingNativeWrite);
+                var singleCreateSource = singleCreateProof is null ? null : NativeProjectGuard.SourceRevision(request.Target.ProjectPath, includeCollaboration: false);
                 originalSourceRevision ??= NativeProjectGuard.SourceRevision(request.Target.ProjectPath, includeCollaboration: false);
                 startingNativeWrite();
                 startedApiOperations.Add(request.OperationId!);
@@ -532,9 +546,20 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
                     registerOwner?.Register();
                     if (registerOwner is not null && fileCapture!.Address.Kind == ModuleKind.GlobalVariable)
                         modules.Value.RequireNativeTracking(fileCapture.Address);
-                    var result = pageLoadEdit is null
-                        ? await registry.InvokeAsync(request.Namespace, request.Method, nativeParameters, CancellationToken.None)
-                        : await registry.ApplyPageLoadAsync(pageLoadEdit);
+                    JsonElement result;
+                    try
+                    {
+                        result = pageLoadEdit is null
+                            ? await registry.InvokeAsync(request.Namespace, request.Method, nativeParameters, CancellationToken.None)
+                            : await registry.ApplyPageLoadAsync(pageLoadEdit);
+                    }
+                    catch (Exception error) when (singleCreateProof is not null && error is not (OutOfMemoryException or StackOverflowException))
+                    {
+                        var observation = await collaboration.Value.ObserveFailedNativePageCreateAsync(singleCreateProof, error);
+                        throw new BridgeException("NativePageCreateDispatchUnverified",
+                            error.Message + " Native collaboration readback: " + observation);
+                    }
+                    if (singleCreateProof is not null) await collaboration.Value.VerifyNativePageCreateAsync(singleCreateProof);
                     if (registerOwner is not null && fileCapture!.Address.Kind == ModuleKind.CustomLibrary)
                     {
                         NativeModules.RegisterDirty(context.DesignerAssembly, "CustomLibrary");
@@ -547,6 +572,10 @@ public sealed partial class V12ProjectAdapter : IFixedProjectApiCatalog, IProjec
                         NativePermissionGroupGuard.VerifyBindings(permissionBefore!, NativePermissionGroupGuard.ReadBindings(permissionConfig!), permissionBindings);
                     }
                     var groups=fileCapture is null?null:targetFiles.Value.ResolveApiGroupsAfter(fileCapture);
+                    if (singleCreateProof is not null)
+                        NativePageReservationPreflight.RequireCreatedPage(writeState, guard.Value.Capture(), singleCreateSource!,
+                            NativeProjectGuard.SourceRevision(request.Target.ProjectPath, includeCollaboration: false),
+                            result, fileCapture!.Address, fileCapture.Plan!.ExpectedNewModules.Single().Name, groups);
                     if(guard.Value.Capture().InCollaborationMode && lifecyclePlan && groups is not { Count:>0 })
                         throw new BridgeException("NativeAffectedTargetsReadbackFailed","The native lifecycle mutation did not resolve every planned owner; do not replay it.");
                     if (registerOwner is not null)
