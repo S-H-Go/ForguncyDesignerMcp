@@ -152,7 +152,7 @@ if($ComponentEvidence) {
        $verification.installed -ne $false -or @($verification.checks).Count -eq 0) {
         throw 'Component evidence is incomplete, has failures, or does not match this exact product source snapshot.'
     }
-    $expectedChecks=@('public-development-preview','universal-payload','universal-native-compatibility')
+    $expectedChecks=@('public-development-preview','public-v12-checkout-receipt','public-v12-language-owner','public-v12-command-node-plan','universal-payload','universal-native-compatibility')
     if((@($verification.checks | ForEach-Object name) -join ';') -cne ($expectedChecks -join ';')){throw 'Public verification stage list does not match the required release workflow.'}
     foreach($record in @($verification.verificationInputs)){
         $inputPath=Get-ChildPath $sourceRoot ([string]$record.path)

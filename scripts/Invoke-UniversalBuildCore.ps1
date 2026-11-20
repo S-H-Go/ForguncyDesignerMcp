@@ -1,5 +1,5 @@
 #requires -Version 7.2
-param([string]$V1103Root,[string]$V11104Root,[string]$V12102Root)
+param([string]$V1103Root,[string]$V11104Root,[string]$V12102Root,[ValidateSet('verify','package')][string]$OutputMode='package')
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $env:DOTNET_CLI_TELEMETRY_OPTOUT='1'
@@ -11,7 +11,7 @@ $commit=Get-McpSourceGitCommit $root
 $inputs=@(Get-McpSourceInputs $root)
 $sourceHash=Get-McpSourceInputHash $inputs
 $verificationPaths=@('Build-Universal.ps1','Invoke-UniversalBuildCore.ps1','Invoke-SerialBuild.ps1') | ForEach-Object {"scripts/$_"}
-foreach($suite in @('DevelopmentPreview','PluginCompatibilityTests')){
+foreach($suite in @('DevelopmentPreview','CheckoutReceipt','LanguageResourceOwner','V12CommandNodePlan','PluginCompatibilityTests')){
     $verificationPaths+=@(Get-ChildItem (Join-Path $root "tests/$suite") -File | ForEach-Object {"tests/$suite/$($_.Name)"})
 }
 $testInputs=@($verificationPaths | Sort-Object -Unique | ForEach-Object {[ordered]@{path=$_;sha256=(Get-FileHash -LiteralPath (Join-Path $root $_)).Hash}})
@@ -36,6 +36,9 @@ Push-Location -LiteralPath $root
 try {
     $project=Join-Path $root 'tests/DevelopmentPreview/DevelopmentPreview.csproj'
     Stage 'public-development-preview' { dotnet run --project $project -c Release -v quiet }
+    Stage 'public-v12-checkout-receipt' { dotnet run --project (Join-Path $root 'tests/CheckoutReceipt/CheckoutReceipt.csproj') -c Release -v quiet }
+    Stage 'public-v12-language-owner' { dotnet run --project (Join-Path $root 'tests/LanguageResourceOwner/LanguageResourceOwner.csproj') -c Release -v quiet }
+    Stage 'public-v12-command-node-plan' { dotnet run --project (Join-Path $root 'tests/V12CommandNodePlan/V12CommandNodePlan.csproj') -c Release -v quiet -- $V12102Root }
     Stage 'universal-payload' { & (Join-Path $PSScriptRoot 'Build-IntegrationPayload.ps1') -DesignerVersion '11.0.3.0' -Universal -V1103Root $V1103Root -V11104Root $V11104Root -V12102Root $V12102Root }
     $payloadLine=@(Get-Content (Join-Path $run 'universal-payload.log') | Where-Object {$_ -like 'PAYLOAD *'})
     if($payloadLine.Count -ne 1){throw 'No unique payload manifest reported.'}
@@ -49,7 +52,9 @@ try {
     foreach($record in $testInputs){if((Get-FileHash -LiteralPath (Join-Path $root $record.path)).Hash -ne $record.sha256){throw 'Verification inputs changed during verification.'}}
     [ordered]@{completed=$true;failure=$null;layer='public-isolated-components-and-protocol';sourceGitCommit=$commit;sourceInputs=$inputs;sourceInputSha256=$sourceHash;verificationInputs=$testInputs;verificationInputSha256=$testHash;checks=$checks.ToArray();nativeMcpStarted=$false;designerStarted=$false;installed=$false;elapsedSeconds=$timer.Elapsed.TotalSeconds} |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $receipt -Encoding utf8
-    & (Join-Path $PSScriptRoot 'Build-CrossVersionPackage.ps1') -PayloadManifest $payload -ComponentEvidence $receipt -CompatibilityEvidence ($result[0].Substring(7))
+    if($OutputMode -eq 'package') {
+        & (Join-Path $PSScriptRoot 'Build-CrossVersionPackage.ps1') -PayloadManifest $payload -ComponentEvidence $receipt -CompatibilityEvidence ($result[0].Substring(7))
+    }
     Write-Output "VERIFICATION $receipt"
     Write-Output "ELAPSED_SECONDS $($timer.Elapsed.TotalSeconds)"
 } finally { Pop-Location }

@@ -3,7 +3,8 @@
 param(
     [Parameter(Mandatory)][string]$V1103Root,
     [Parameter(Mandatory)][string]$V11104Root,
-    [Parameter(Mandatory)][string]$V12102Root
+    [Parameter(Mandatory)][string]$V12102Root,
+    [switch]$VerifyOnly
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -14,4 +15,4 @@ function FailUnlessFullSdkRoots {
 }
 FailUnlessFullSdkRoots
 $entry=Join-Path $PSScriptRoot 'Invoke-UniversalBuildCore.ps1'
-& (Join-Path $PSScriptRoot 'Invoke-SerialBuild.ps1') -ScriptPath $entry -ScriptArguments @($V1103Root,$V11104Root,$V12102Root)
+& (Join-Path $PSScriptRoot 'Invoke-SerialBuild.ps1') -ScriptPath $entry -ScriptArguments @($V1103Root,$V11104Root,$V12102Root,$(if($VerifyOnly){ 'verify' } else { 'package' }))
