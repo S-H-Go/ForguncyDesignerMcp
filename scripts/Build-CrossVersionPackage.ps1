@@ -152,6 +152,13 @@ if($ComponentEvidence) {
        $verification.installed -ne $false -or @($verification.checks).Count -eq 0) {
         throw 'Component evidence is incomplete, has failures, or does not match this exact product source snapshot.'
     }
+    $expectedChecks=@('public-development-preview','universal-payload','universal-native-compatibility')
+    if((@($verification.checks | ForEach-Object name) -join ';') -cne ($expectedChecks -join ';')){throw 'Public verification stage list does not match the required release workflow.'}
+    foreach($record in @($verification.verificationInputs)){
+        $inputPath=Get-ChildPath $sourceRoot ([string]$record.path)
+        Assert-NoLink $inputPath $sourceRoot
+        if((Get-Hash $inputPath) -ne [string]$record.sha256){throw 'Public verification inputs no longer match the receipt.'}
+    }
     $checkRecords=@(foreach($check in $verification.checks) {
         if($check.exitCode -ne 0){throw 'A recorded component check failed.'}
         $logPath=[IO.Path]::GetFullPath([string]$check.log)
@@ -290,7 +297,14 @@ if($isUniversal) {
         }
     }
     if((Get-Hash $compatibilityPath) -ne $compatibilityHash){throw 'Universal compatibility evidence changed while being read.'}
-    $compatibilitySummary=[ordered]@{evidenceSha256=$compatibilityHash;layer=$compatibility.layer;minimumDesignerVersion=$compatibility.minimumDesignerVersion;ownFiles=$compatibilityFiles;profiles=$compatibilityProfiles;installed=$false;liveDesignerValidated=$false}
+    $compatibilitySummary=[ordered]@{evidenceSha256=$compatibilityHash;layer=$compatibility.layer;minimumDesignerVersion=$compatibility.minimumDesignerVersion;ownFiles=$compatibilityFiles;profiles=@(foreach($p in $compatibilityProfiles){
+        [ordered]@{designerVersion=$p.designerVersion;designerSha256=$p.designerSha256;
+            dependencyAccepted=$p.dependencyAccepted;nativePluginLoader=$p.nativePluginLoader;abiMembersResolved=$p.abiMembersResolved;
+            cellTypeCreated=$p.cellTypeCreated;designerCreated=$p.designerCreated;adapterResolved=$p.adapterResolved;
+            runtimeVersion=$p.runtimeVersion;embeddedRuntimeExecuted=$p.embeddedRuntimeExecuted;embeddedHttpStarted=$p.embeddedHttpStarted;
+            dependencyFiles=$p.dependencyFiles;ownFiles=$p.ownFiles;
+            sdkAssemblies=@($p.sdkAssemblies | Select-Object name,version,sha256)}
+    });installed=$false;liveDesignerValidated=$false}
 } elseif($CompatibilityEvidence) {throw 'CompatibilityEvidence is only applicable to universal payloads.'}
 $sdkReferences = @()
 $requiredSdk = @('GrapeCity.Forguncy.CellTypes','GrapeCity.Forguncy.CellTypes.Design','GrapeCity.Forguncy.Plugin')

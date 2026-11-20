@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)][ValidateSet('verify')][string]$Mode,[string]$BundleDirectory,[string]$V1103Root,[string]$V11104Root,[string]$V12102Root)
+param([Parameter(Mandatory)][ValidateSet('verify')][string]$Mode,[string]$BundleDirectory,[string]$V1103Root,[string]$V11104Root,[string]$V12102Root,[switch]$Serial)
 $ErrorActionPreference='Stop'
 $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $workspace=$repo
@@ -21,22 +21,47 @@ $targets=@(
  @{Name='11.0.104.0';Root=$V11104Root},
  @{Name='12.0.102.0';Root=$V12102Root}
 )
+# These processes only read the SDK/candidate DLLs and each binds an
+# OS-assigned loopback port plus its own log. Await every child before packaging.
+# -Serial runs the exact same probes in sequence for diagnostics/measurement.
+$probeTimer=[Diagnostics.Stopwatch]::StartNew()
 $failed=$false
 $profiles=@()
-foreach($target in $targets){
- $log=Join-Path $out ($Mode+'-'+$target.Name+'.log')
- $arguments=@($test,('--'+$Mode),$target.Root)
- if($Mode -eq 'verify'){$arguments+= $BundleDirectory}
- & dotnet @arguments *> $log
- $code=$LASTEXITCODE
- Write-Output ($target.Name+' exit='+$code+' log='+$log)
- if($code -ne 0){$failed=$true; Get-Content $log -Tail 20}
- elseif($Mode -eq 'verify') {
-   $profile=Get-Content $log -Tail 1 | ConvertFrom-Json
-   if($profile.designerVersion -ne $target.Name){throw 'Probe returned a different native Designer version.'}
+$workers=[Collections.Generic.List[object]]::new()
+try {
+ foreach($target in $targets){
+   if(-not [IO.Path]::IsPathFullyQualified($target.Root)){throw 'Each installed SDK must have an absolute root.'}
+   $log=Join-Path $out ('verify-'+$target.Name+'.log')
+   $err=$log+'.stderr'
+   $psi=[Diagnostics.ProcessStartInfo]::new()
+   $psi.FileName=(Get-Command dotnet -ErrorAction Stop).Source
+   $psi.CreateNoWindow=$true
+   $psi.UseShellExecute=$false
+   $psi.RedirectStandardOutput=$true
+   $psi.RedirectStandardError=$true
+   $psi.Environment.Remove('FORGUNCY_TEST_ONLINE_HELP') | Out-Null
+   foreach($arg in @($test,'--verify',$target.Root,$BundleDirectory)){$psi.ArgumentList.Add($arg)}
+   $process=[Diagnostics.Process]::Start($psi)
+   $worker=[pscustomobject]@{target=$target;process=$process;log=$log;err=$err;
+       stdout=$process.StandardOutput.ReadToEndAsync();stderr=$process.StandardError.ReadToEndAsync()}
+   $workers.Add($worker)
+   if($Serial){$process.WaitForExit()}
+ }
+ foreach($worker in $workers){
+   $worker.process.WaitForExit()
+   $worker.stdout.GetAwaiter().GetResult() | Set-Content -LiteralPath $worker.log -NoNewline
+   $worker.stderr.GetAwaiter().GetResult() | Set-Content -LiteralPath $worker.err -NoNewline
+   $code=$worker.process.ExitCode
+   Write-Output ($worker.target.Name+' exit='+$code+' log='+$worker.log)
+   if($code -ne 0){$failed=$true;Get-Content -LiteralPath $worker.err -Tail 20;continue}
+   $profile=Get-Content -LiteralPath $worker.log -Tail 1 | ConvertFrom-Json
+   if($profile.designerVersion -ne $worker.target.Name){throw 'Probe returned a different native Designer version.'}
    $profiles+= $profile
  }
+} finally {
+ foreach($worker in $workers){$worker.process.WaitForExit();$worker.process.Dispose()}
 }
+Write-Output "PROBE_SECONDS $($probeTimer.Elapsed.TotalSeconds)"
 if($failed){throw 'At least one native compatibility probe failed.'}
 if($Mode -eq 'verify') {
   $own=@($profiles[0].ownFiles | Sort-Object path)
