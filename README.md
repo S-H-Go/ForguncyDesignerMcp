@@ -37,3 +37,15 @@ dotnet build .\ForguncyDesignerMcp\ForguncyDesignerMcp.csproj -c Release -m:1 -n
 ## 许可证
 
 本项目原创源码按 [Apache License 2.0](LICENSE) 发布。[第三方声明](docs/THIRD-PARTY-NOTICES.md)与上游许可证适用于相应依赖；活字格及相关 SDK 不在本仓库许可范围内。
+## 构建与验证 Universal V11/V12 包
+
+在 Windows 上使用 PowerShell 7.2+、.NET 8 SDK 和自行合法安装的三个精确版本 SDK。以下命令要求 Git 工作区干净；参数填写各版本的安装根目录（包含 `WebSite\designerBin\Forguncy.dll`）。
+
+~~~powershell
+pwsh -File .\scripts\Build-Universal.ps1 `
+    -V1103Root '<11.0.3.0 安装根目录>' `
+    -V11104Root '<11.0.104.0 安装根目录>' `
+    -V12102Root '<12.0.102.0 安装根目录>'
+~~~
+
+构建使用 11.0.3.0 SDK，并核对三个安装版本的二进制指纹。工具运行公开预览回归、以同一组实际生成的 DLL 隔离验证三个原生宿主版本，并将安装包、离线包及 SHA-256 写入本仓库的 `dist/`，更新 `dist/latest-release.json`。结果不会安装插件、启动 Designer、打开业务工程或提交到 GitHub。原生宿主探针会启动并关闭仅限回环地址的测试 HTTP 端口。日志和源提交绑定证据保存在本地 `.local/`。这不是私有业务项目回归或实机验收。
