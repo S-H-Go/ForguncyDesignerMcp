@@ -16,7 +16,7 @@ internal static class Program
     {
         try
         {
-            if (args.Length < 2) throw new ArgumentException("Usage: --inspect SDK_ROOT or --verify SDK_ROOT BUNDLE_DIRECTORY");
+            if (args.Length != 3 || args[0] != "--verify") throw new ArgumentException("Usage: --verify SDK_ROOT BUNDLE_DIRECTORY");
             var root = Path.GetFullPath(args[1]);
             var site = Path.Combine(root, "WebSite");
             var dirs = new[] { Path.Combine(site, "designerBin"), Path.Combine(site, "bin"), Path.Combine(site, "arServerBin") };
@@ -24,11 +24,10 @@ internal static class Program
             using var runtimeConfig = JsonDocument.Parse(File.ReadAllText(Path.Combine(dirs[0], "Forguncy.runtimeconfig.json")));
             if (runtimeConfig.RootElement.GetProperty("runtimeOptions").GetProperty("tfm").GetString() != "net8.0" || Environment.Version.Major != 8)
                 throw new InvalidOperationException("The probe runtime does not match the installed native Designer runtime.");
-            var bundle = args[0] == "--verify" && args.Length == 3 ? Path.GetFullPath(args[2]) : null;
-            if (args[0] != "--inspect" && bundle is null) throw new ArgumentException("Unknown probe mode or missing bundle.");
+            var bundle = Path.GetFullPath(args[2]);
             AssemblyLoadContext.Default.Resolving += (context, name) =>
             {
-                if (bundle is not null && Product.Contains(name.Name, StringComparer.Ordinal))
+                if (Product.Contains(name.Name, StringComparer.Ordinal))
                 {
                     var pluginFile = Path.Combine(bundle, name.Name + ".dll");
                     return File.Exists(pluginFile) ? context.LoadFromAssemblyPath(pluginFile) : null;
@@ -40,22 +39,6 @@ internal static class Program
                 }
                 return null;
             };
-            if (bundle is null)
-            {
-                var designer = AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(dirs[0], "Forguncy.dll"));
-                var checker = designer.GetType("Forguncy.Model.PluginVersionChecker", true)!;
-                Console.WriteLine("DESIGNER " + designer.GetName().Version);
-                foreach (var method in checker.GetMethods(All | BindingFlags.DeclaredOnly)) Console.WriteLine(IlDump.Dump(method, true));
-                var getVersion = designer.GetType("Forguncy.Common.Utilities", true)!.GetMethod("GetDesignerVersion", All)!;
-                Console.WriteLine(IlDump.Dump(getVersion, true));
-                var item = Assembly.Load("CommonUtilities").GetType("CommonUtilities.PluginItem", true)!;
-                var nativeLoader = item.Assembly.GetType("CommonUtilities.ForguncyPluginLoadContext", true)!;
-                foreach (var constructor in nativeLoader.GetConstructors(All)) Console.WriteLine(IlDump.Dump(constructor, true));
-                foreach (var method in nativeLoader.GetMethods(All | BindingFlags.DeclaredOnly)) Console.WriteLine(IlDump.Dump(method, true));
-                foreach (var property in item.GetProperties(All)) Console.WriteLine("PLUGIN_ITEM " + property.Name + " " + property.PropertyType.FullName + " writable=" + property.CanWrite);
-                CheckNativeVersion(designer, item);
-                return 0;
-            }
             var paths = Product.ToDictionary(name => name, name => Path.Combine(bundle, name + ".dll"), StringComparer.Ordinal);
             var initialHashes = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var pair in paths)

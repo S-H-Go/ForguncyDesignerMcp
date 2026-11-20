@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)][ValidateSet('inspect','verify')][string]$Mode,[string]$BundleDirectory,[string]$V1103Root,[string]$V11104Root,[string]$V12102Root)
+param([Parameter(Mandatory)][ValidateSet('verify')][string]$Mode,[string]$BundleDirectory,[string]$V1103Root,[string]$V11104Root,[string]$V12102Root)
 $ErrorActionPreference='Stop'
 $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $workspace=$repo
